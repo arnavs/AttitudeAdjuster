@@ -1,11 +1,11 @@
 {
     "bot0": {
-        "file_path": "agents.test_agents.AllInAgent",
+        "file_path": "submission.player.PlayerAgent",
         "port": 8000,
         "player_id": "bot0"
     },
     "bot1": {
-        "file_path": "submission.player.PlayerAgent",
+        "file_path": "agents.test_agents.RandomAgent",
         "port": 8001,
         "player_id": "bot1"
     },

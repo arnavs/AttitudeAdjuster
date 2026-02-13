@@ -6,7 +6,6 @@ from gym_env import PokerEnv
 action_types = PokerEnv.ActionType
 int_to_card = PokerEnv.int_to_card
 
-
 class FoldAgent(Agent):
     def __name__(self):
         return "FoldAgent"
@@ -57,26 +56,28 @@ class AllInAgent(Agent):
 
 
 class RandomAgent(Agent):
-    def __name__(self):
-        return "RandomAgent"
+    def __init__(self, stream: bool = False):
+        super().__init__(stream)  # This sets up the logger and API logic
+        self.action_types = PokerEnv.ActionType
 
     def act(self, observation, reward, terminated, truncated, info):
-        valid_actions = [i for i, is_valid in enumerate(observation["valid_actions"]) if is_valid]
-        action_type = random.choice(valid_actions)
+        valid_actions = observation["valid_actions"]
+        
+        # 1. Mandatory Discard Phase Handling
+        if valid_actions[self.action_types.DISCARD.value]:
+            keep_indices = random.sample(range(5), 2)
+            return (self.action_types.DISCARD.value, 0, keep_indices[0], keep_indices[1])
 
-        if action_type == action_types.RAISE.value:
+        # 2. Random Betting Phase Handling
+        possible_indices = [i for i, is_valid in enumerate(valid_actions) if is_valid]
+        action_type = random.choice(possible_indices)
+        
+        raise_amount = 0
+        if action_type == self.action_types.RAISE.value:
             raise_amount = random.randint(observation["min_raise"], observation["max_raise"])
-            if raise_amount > 20:
-                self.logger.info(f"Random large raise: {raise_amount}")
-        else:
-            raise_amount = 0
 
-        card_to_discard = -1
-        if observation["valid_actions"][action_types.DISCARD.value]:
-            card_to_discard = random.randint(0, 1)
-            self.logger.debug(f"Randomly discarding card {card_to_discard}")
-
-        return action_type, raise_amount, card_to_discard
+        return (action_type, raise_amount, 0, 0)
 
 
-all_agent_classes = (FoldAgent, CallingStationAgent, AllInAgent, RandomAgent)
+all_agent_classes = (RandomAgent)
+

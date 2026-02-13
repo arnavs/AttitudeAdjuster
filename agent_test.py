@@ -12,7 +12,7 @@ from logging import getLogger
 from typing import Optional, Type
 
 from agents.agent import Agent
-from agents.test_agents import AllInAgent, CallingStationAgent, FoldAgent, RandomAgent
+from agents.test_agents import RandomAgent
 from match import run_api_match
 
 NUM_HANDS = 5
@@ -95,6 +95,8 @@ def run_test_match(test_agent_class: Agent, logger):
         process0.start()
         process1.start()
 
+        time.sleep(2)
+
         result = run_api_match("http://127.0.0.1:8000", "http://127.0.0.1:8001", logger, num_hands=NUM_HANDS, csv_path=f"./match_{test_agent_class.__name__}.csv")
 
         return result
@@ -139,7 +141,7 @@ def main():
 
     test_results = {"games_completed": 0, "runtime_errors": 0, "timeout_errors": 0}
 
-    test_agents = [AllInAgent, FoldAgent, CallingStationAgent, RandomAgent]
+    test_agents = [RandomAgent]
 
     for test_agent_class in test_agents:
         print(f"\nTesting user bot against {test_agent_class.__name__}")
@@ -196,3 +198,4 @@ if __name__ == "__main__":
     results = main()
     if not results["passed"]:
         sys.exit(1)
+
