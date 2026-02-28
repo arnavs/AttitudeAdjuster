@@ -345,8 +345,8 @@ def test_example_game_1():
         8, 16, 9, 11, 23  # community cards
     ]
     
-    # Engine returns (p0_reward, p1_reward); this deck/action sequence yields p0=-14, p1=+14
-    expected_final_rewards = (-14, 14)
+    # Engine returns (p0_reward, p1_reward); with 27-card deck this deck/action sequence yields P0 wins: (14, -14)
+    expected_final_rewards = (14, -14)
 
     # 4-tuple format: (action_type, raise_amount, keep1, keep2)
     actions = [
