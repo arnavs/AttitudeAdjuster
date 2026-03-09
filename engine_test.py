@@ -247,25 +247,25 @@ def test_allways_raise_small():
     p0_preflop_raise = Action(PokerEnv.ActionType.RAISE.value, min_bet, 0, 0)
     p1_preflop_call = Action(PokerEnv.ActionType.CALL.value, 0, 0, 0)
     
-    # Flop Discard Phase: Mandatory after Pre-Flop ends
+    # Flop Discard Phase: Mandatory after Pre-Flop ends. BB (p1) acts first post-flop.
     p0_discard = Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1) # Keep first two cards
     p1_discard = Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1)
     
-    # Post-Discard Betting: p0 raises, p1 calls
-    p0_betting_raise = Action(PokerEnv.ActionType.RAISE.value, min_bet, 0, 0)
-    p1_betting_call = Action(PokerEnv.ActionType.CALL.value, 0, 0, 0)
+    # Post-Discard Betting: BB (p1) acts first, so p1 raises, p0 calls
+    p0_betting_call = Action(PokerEnv.ActionType.CALL.value, 0, 0, 0)
+    p1_betting_raise = Action(PokerEnv.ActionType.RAISE.value, min_bet, 0, 0)
 
     # --- Sequence Assembly ---
-    # Street 0 (Pre-flop): p0 raise, p1 call
-    # Street 1 (Flop): p0 discard, p1 discard, p0 raise, p1 call
-    # Street 2 (Turn): p0 raise, p1 call
-    # Street 3 (River): p0 raise, p1 call
+    # Street 0 (Pre-flop): SB (p0) acts first: p0 raise, p1 call
+    # Street 1 (Flop): BB (p1) acts first: p1 discard, p0 discard, p1 raise, p0 call
+    # Street 2 (Turn): BB first: p1 raise, p0 call
+    # Street 3 (River): BB first: p1 raise, p0 call
     actions = [
         p0_preflop_raise, p1_preflop_call,   # Street 0
-        p0_discard, p1_discard,              # Street 1 Mandatory Phase
-        p0_betting_raise, p1_betting_call,   # Street 1 Betting
-        p0_betting_raise, p1_betting_call,   # Street 2
-        p0_betting_raise, p1_betting_call    # Street 3
+        p1_discard, p0_discard,              # Street 1 Discard (BB first)
+        p1_betting_raise, p0_betting_call,   # Street 1 Betting (BB first)
+        p1_betting_raise, p0_betting_call,   # Street 2
+        p1_betting_raise, p0_betting_call    # Street 3
     ]
 
     # Placeholder states for _test_engine to ignore/skip detailed field checks
@@ -294,7 +294,7 @@ def test_example_tie():
     sb_call = Action(PokerEnv.ActionType.CALL.value, 0, 0, 0)
     bb_check = Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0)
     
-    # Flop Discard Phase: Mandatory for both
+    # Flop Discard Phase: Mandatory for both. BB (p1) acts first post-flop.
     p0_discard = Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1) # Keep indices 0, 1
     p1_discard = Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1)
     
@@ -302,17 +302,17 @@ def test_example_tie():
     check = Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0)
 
     # --- Sequence Assembly ---
-    # 1. Pre-Flop (2 actions)
-    # 2. Discard Phase (2 actions)
-    # 3. Flop Betting (2 actions)
-    # 4. Turn Betting (2 actions)
-    # 5. River Betting (2 actions)
+    # 1. Pre-Flop (2 actions): SB first
+    # 2. Discard Phase (2 actions): BB first
+    # 3. Flop Betting (2 actions): BB first
+    # 4. Turn Betting (2 actions): BB first
+    # 5. River Betting (2 actions): BB first
     actions = [
         sb_call, bb_check,         # Street 0
-        p0_discard, p1_discard,    # Street 1 Discard Phase
-        check, check,              # Street 1 Betting
-        check, check,              # Street 2
-        check, check               # Street 3
+        p1_discard, p0_discard,     # Street 1 Discard (BB first)
+        check, check,               # Street 1 Betting
+        check, check,               # Street 2
+        check, check                # Street 3
     ]
 
     states = [({}, {})] * len(actions)
@@ -349,17 +349,18 @@ def test_example_game_1():
     expected_final_rewards = (14, -14)
 
     # 4-tuple format: (action_type, raise_amount, keep1, keep2)
+    # Pre-flop: SB (P0) first. Post-flop: BB (P1) first.
     actions = [
         Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),     # P0 Calls Pre-flop
         Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),    # P1 Checks Pre-flop
-        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1),  # P0 Discards (Flop starts)
-        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1),  # P1 Discards
-        Action(PokerEnv.ActionType.RAISE.value, 2, 0, 0),    # P0 Raises on Flop
-        Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),     # P1 Calls
-        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),    # P0 Checks on Turn
-        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),    # P1 Checks
-        Action(PokerEnv.ActionType.RAISE.value, 10, 0, 0),   # P0 Raises on River
-        Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),     # P1 Calls
+        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1),  # P1 Discards (BB first on flop)
+        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1),  # P0 Discards
+        Action(PokerEnv.ActionType.RAISE.value, 2, 0, 0),    # P1 Raises on Flop (BB first)
+        Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),     # P0 Calls
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),    # P1 Checks on Turn (BB first)
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),    # P0 Checks
+        Action(PokerEnv.ActionType.RAISE.value, 10, 0, 0),   # P1 Raises on River (BB first)
+        Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),     # P0 Calls
     ]
 
     # Shared observation template for brevity in this example
@@ -473,18 +474,19 @@ def test_illegal_keep_logic():
     Test that keeping out-of-bounds indices or duplicate indices triggers a fold.
     """
     rigged_deck = [i for i in range(15)]
-    # Actions: SB Calls, BB Checks, SB attempts to keep index 5 (Illegal)
+    # Actions: SB Calls, BB Checks. Flop: BB (P1) discards first, then SB (P0) attempts illegal keep index 5.
     actions = [
         Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),
         Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),
-        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 5) # Index 5 is invalid
+        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1),  # P1 (BB) discards first
+        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 5)   # P0 (SB) illegal: index 5
     ]
     
-    # Player 0 should be folded, Player 1 wins the pot of 2.
+    # Player 0 should be folded (invalid discard), Player 1 wins the pot of 2.
     expected_final_rewards = (-2, 2)
     
     # Minimal updates for engine runner
-    updates = list(zip(actions, [({}, {})] * 3))
+    updates = list(zip(actions, [({}, {})] * len(actions)))
     
     print("Running Illegal Keep Test...")
     _test_engine(rigged_deck, updates, expected_final_rewards)
@@ -504,10 +506,10 @@ def test_discard_showdown_integrity():
     actions = [
         Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),
         Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),
+        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1), # P1 keeps 9 and 9 (Pair) - BB first
         Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1), # P0 keeps A and 2 (High Card)
-        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1), # P1 keeps 9 and 9 (Pair)
-        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),
-        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0), # Flop
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),  # P1 (BB) first on flop
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),  # P0
         Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),
         Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0), # Turn
         Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),
@@ -529,16 +531,17 @@ def test_multi_street_betting_and_fold():
     rigged_deck = [i for i in range(15)]
     
     actions = [
-        Action(PokerEnv.ActionType.RAISE.value, 10, 0, 0), # P0 Raise 10 (Total 11)
-        Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),   # P1 Call (Total 11)
-        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1), # Discards
-        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1),
-        Action(PokerEnv.ActionType.RAISE.value, 20, 0, 0), # P0 Raise 20 (Total 31)
-        Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),   # P1 Call (Total 31)
-        Action(PokerEnv.ActionType.FOLD.value, 0, 0, 0)    # P0 Folds on Turn
+        Action(PokerEnv.ActionType.RAISE.value, 10, 0, 0), # P0 Raise 10 (Total 12) - SB first
+        Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),   # P1 Call (Total 12)
+        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1), # P1 Discard - BB first
+        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1), # P0 Discard
+        Action(PokerEnv.ActionType.RAISE.value, 20, 0, 0), # P1 Raise 20 (Total 32) - BB first
+        Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),   # P0 Call (Total 32)
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),  # P1 Check on Turn - BB first
+        Action(PokerEnv.ActionType.FOLD.value, 0, 0, 0)     # P0 Folds on Turn
     ]
     
-    # Each player put in 31. P0 folds, so P1 wins 31.
+    # Each player put in 32 (12 pre-flop + 20 on flop). P0 folds on turn, so P1 wins pot of 64 (P0 net -32, P1 net +32).
     expected_final_rewards = (-32, 32)
     updates = list(zip(actions, [({}, {})] * len(actions)))
     
@@ -564,14 +567,14 @@ def test_discard_showdown_integrity_v2():
     actions = [
         Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),
         Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),
+        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1), # P1 keeps 8c, 8s - BB first
         Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1), # P0 keeps Ad, 2d
-        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1), # P1 keeps 8c, 8s
-        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),
-        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0), # Flop
-        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),
-        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0), # Turn
-        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),
-        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0)  # River
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),  # P1 (BB) first
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),  # P0 - Flop
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),  # P1 - Turn
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),  # P0
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),  # P1 - River
+        Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0)   # P0
     ]
 
     # P1 wins with Pair of 8s. P0 has Ace High (Pair of 2s isn't possible here).
@@ -624,12 +627,13 @@ def test_duplicate_keep_prevention():
     actions = [
         Action(PokerEnv.ActionType.CALL.value, 0, 0, 0),
         Action(PokerEnv.ActionType.CHECK.value, 0, 0, 0),
-        # P0 tries to keep index 0 twice to "duplicate" a card.
-        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 0) 
+        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 1),  # P1 (BB) discards first
+        # P0 tries to keep index 0 twice to "duplicate" a card (invalid).
+        Action(PokerEnv.ActionType.DISCARD.value, 0, 0, 0)
     ]
     
     expected_final_rewards = (-2, 2)
-    updates = list(zip(actions, [({}, {})] * 3))
+    updates = list(zip(actions, [({}, {})] * len(actions)))
     
     print("Running Duplicate Keep Test...")
     _test_engine(rigged_deck, updates, expected_final_rewards)

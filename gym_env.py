@@ -278,12 +278,13 @@ class PokerEnv(gym.Env):
     def _next_street(self):
         """
         Update to the next street of the game.
+        Pre-flop: small blind acts first. Post-flop (flop, turn, river): big blind acts first.
         """
         self.street += 1
         self.min_raise = self.big_blind_amount
         assert self.bets[0] == self.bets[1], self.logger.log(f"Bet amounts are not equal: {self.bets}")
         self.last_street_bet = self.bets[0]
-        self.acting_agent = self.small_blind_player
+        self.acting_agent = self.big_blind_player
 
     def _get_winner(self):
         """
@@ -356,8 +357,13 @@ class PokerEnv(gym.Env):
                 # on the first street, the little blind can "call" the big blind's bet of 2
                 new_street = True
         elif action_type == self.ActionType.CHECK.value:
-            if self.acting_agent == self.big_blind_player:
-                new_street = True  # big blind checks mean next street
+            # Street ends when the last-to-act player checks.
+            # Pre-flop: SB first, BB last -> BB check ends street.
+            # Post-flop: BB first, SB last -> SB check ends street.
+            if self.street == 0 and self.acting_agent == self.big_blind_player:
+                new_street = True
+            elif self.street >= 1 and self.acting_agent == self.small_blind_player:
+                new_street = True
         elif action_type == self.ActionType.RAISE.value:
             assert (
                 self.bets[1 - self.acting_agent] >= self.bets[self.acting_agent]
