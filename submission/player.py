@@ -132,7 +132,7 @@ class PlayerAgent(Agent):
                 return wins / self.MC_SAMPLES
 
     def _thompson_action(self, observation):
-        """Sample N pairs from posterior, compute equity for each, raise if majority are wins."""
+        """Sample N pairs from posterior, compute equity for each, act based on equity."""
         N = 20
         valid_actions = observation["valid_actions"]
         min_raise = observation["min_raise"]
@@ -143,19 +143,23 @@ class PlayerAgent(Agent):
         indices = np.random.choice(len(self.opp_pairs), size=N, p=self.opp_weights / self.opp_weights.sum())
         win_rate = np.mean([self._equity_vs_pair(*self.opp_pairs[i], my_cards_treys, community, observation) for i in indices])
 
-        if win_rate > 0.5 and valid_actions[self.action_types.RAISE.value]:
-            raise_amount = np.random.randint(min_raise, max_raise + 1)
-            return self.action_types.RAISE.value, raise_amount, 0, 0
-
         call_amount = observation["opp_bet"] - observation["my_bet"]
         pot_odds = call_amount / (observation["pot_size"] + call_amount) if call_amount > 0 else 0.0
-        if win_rate >= pot_odds:
-            if valid_actions[self.action_types.CALL.value]:
-                return self.action_types.CALL.value, 0, 0, 0
-            return self.action_types.CHECK.value, 0, 0, 0
+
+        # Raise only with strong equity; size proportional to strength
+        if win_rate > 0.65 and valid_actions[self.action_types.RAISE.value]:
+            frac = (win_rate - 0.65) / 0.35  # 0 at 0.65, 1 at 1.0
+            raise_amount = int(min_raise + frac * (max_raise - min_raise))
+            raise_amount = max(min_raise, min(raise_amount, max_raise))
+            return self.action_types.RAISE.value, raise_amount, 0, 0
 
         if valid_actions[self.action_types.CHECK.value]:
             return self.action_types.CHECK.value, 0, 0, 0
+
+        # Call only if equity exceeds pot odds by a margin
+        if win_rate >= pot_odds + 0.1 and valid_actions[self.action_types.CALL.value]:
+            return self.action_types.CALL.value, 0, 0, 0
+
         return self.action_types.FOLD.value, 0, 0, 0
 
     def _init_prior(self, observation):
@@ -239,15 +243,18 @@ class PlayerAgent(Agent):
         call_amount = observation["opp_bet"] - observation["my_bet"]
         pot_odds = call_amount / (observation["pot_size"] + call_amount) if call_amount > 0 else 0.0
 
+        if valid_actions[self.action_types.CHECK.value]:
+            return self.action_types.CHECK.value, 0, 0, 0
+
+        # Facing a raise: fold weak hands
+        if equity < 0.45:
+            return self.action_types.FOLD.value, 0, 0, 0
+
         if equity > 0.55 and valid_actions[self.action_types.RAISE.value]:
             raise_amount = np.random.randint(min_raise, max_raise + 1)
             return self.action_types.RAISE.value, raise_amount, 0, 0
-        if equity >= pot_odds:
-            if valid_actions[self.action_types.CALL.value]:
-                return self.action_types.CALL.value, 0, 0, 0
-            return self.action_types.CHECK.value, 0, 0, 0
-        if valid_actions[self.action_types.CHECK.value]:
-            return self.action_types.CHECK.value, 0, 0, 0
+        if equity >= pot_odds and valid_actions[self.action_types.CALL.value]:
+            return self.action_types.CALL.value, 0, 0, 0
         return self.action_types.FOLD.value, 0, 0, 0
 
 
