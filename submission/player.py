@@ -3,36 +3,13 @@ import time
 import itertools
 import numpy as np
 from math import comb
-from multiprocessing import Pool
+import multiprocessing
 from agents.agent import Agent
 from gym_env import PokerEnv, WrappedEval
+from worker import init_worker, mc_equity_worker
 
 _PREFLOP_TABLE_PATH = os.path.join(os.path.dirname(__file__), "preflop_equity.npy")
-N_WORKERS = 4
-
-_worker_evaluator = None
-
-
-def _init_worker():
-    global _worker_evaluator
-    _worker_evaluator = WrappedEval()
-
-
-def _mc_equity_worker(args):
-    h1, h2, flop, pool, n_samples = args
-    pool = np.array(pool)
-    wins = 0
-    for _ in range(n_samples):
-        sample = np.random.choice(pool, size=4, replace=False)
-        opp_h1, opp_h2, turn, river = sample
-        board = [PokerEnv.int_to_card(c) for c in flop + [turn, river]]
-        our_rank = _worker_evaluator.evaluate([PokerEnv.int_to_card(h1), PokerEnv.int_to_card(h2)], board)
-        opp_rank = _worker_evaluator.evaluate([PokerEnv.int_to_card(opp_h1), PokerEnv.int_to_card(opp_h2)], board)
-        if our_rank < opp_rank:
-            wins += 1
-        elif our_rank == opp_rank:
-            wins += 0.5
-    return wins / n_samples
+N_WORKERS = 2
 
 
 def _hand_idx(cards):
@@ -52,8 +29,9 @@ class PlayerAgent(Agent):
         self.hand_start_time = None
         self.cumulative_chips = 0
         self.evaluator = WrappedEval()
-        self.MC_SAMPLES = 400
-        self.pool = Pool(N_WORKERS, initializer=_init_worker)
+        self.MC_SAMPLES = 100
+        ctx = multiprocessing.get_context("fork")
+        self.pool = ctx.Pool(N_WORKERS, initializer=init_worker)
         if os.path.exists(_PREFLOP_TABLE_PATH):
             self.preflop_table = np.load(_PREFLOP_TABLE_PATH)
         else:
@@ -93,7 +71,7 @@ class PlayerAgent(Agent):
             excluded = set([h1, h2] + opp_discards + my_discards + my_cards + community)
             pool = [c for c in range(27) if c not in excluded]
             args.append((h1, h2, self.flop_cards, pool, self.MC_SAMPLES))
-        equities = np.array(self.pool.map(_mc_equity_worker, args))
+        equities = np.array(self.pool.map(mc_equity_worker, args))
 
         TEMP = 10.0
         log_weights = TEMP * equities
