@@ -3,14 +3,10 @@ import time
 import itertools
 import numpy as np
 from math import comb
-import multiprocessing
 from agents.agent import Agent
 from gym_env import PokerEnv, WrappedEval
-from worker import init_worker, mc_equity_worker
 
 _PREFLOP_TABLE_PATH = os.path.join(os.path.dirname(__file__), "preflop_equity.npy")
-N_WORKERS = 2
-
 
 def _hand_idx(cards):
     c = sorted(cards)
@@ -29,9 +25,7 @@ class PlayerAgent(Agent):
         self.hand_start_time = None
         self.cumulative_chips = 0
         self.evaluator = WrappedEval()
-        self.MC_SAMPLES = 100
-        ctx = multiprocessing.get_context("fork")
-        self.pool = ctx.Pool(N_WORKERS, initializer=init_worker)
+        self.MC_SAMPLES = 25
         if os.path.exists(_PREFLOP_TABLE_PATH):
             self.preflop_table = np.load(_PREFLOP_TABLE_PATH)
         else:
@@ -71,7 +65,7 @@ class PlayerAgent(Agent):
             excluded = set([h1, h2] + opp_discards + my_discards + my_cards + community)
             pool = [c for c in range(27) if c not in excluded]
             args.append((h1, h2, self.flop_cards, pool, self.MC_SAMPLES))
-        equities = np.array(self.pool.map(mc_equity_worker, args))
+        equities = np.array([self._mc_equity(*a) for a in args])
 
         TEMP = 10.0
         log_weights = TEMP * equities
@@ -210,12 +204,12 @@ class PlayerAgent(Agent):
             self._update_prior_discard(observation)
             self.logger.info(f"Prior initialized: {len(self.opp_pairs)} pairs, weights sum={self.opp_weights.sum():.3f}")
 
-        # hand_elapsed = time.time() - (self.hand_start_time or time.time())
-        # if hand_elapsed > 3.5:
-        #     self.logger.info(f"Hand {hand_number} time budget exceeded ({hand_elapsed:.1f}s), checking/folding")
-        #     if observation["valid_actions"][self.action_types.CHECK.value]:
-        #         return self.action_types.CHECK.value, 0, 0, 0
-        #     return self.action_types.FOLD.value, 0, 0, 0
+        hand_elapsed = time.time() - (self.hand_start_time or time.time())
+        if hand_elapsed > 3.5:
+            self.logger.info(f"Hand {hand_number} time budget exceeded ({hand_elapsed:.1f}s), checking/folding")
+            if observation["valid_actions"][self.action_types.CHECK.value]:
+                return self.action_types.CHECK.value, 0, 0, 0
+            return self.action_types.FOLD.value, 0, 0, 0
 
         street = observation["street"]
         if street == 0:
@@ -238,7 +232,7 @@ class PlayerAgent(Agent):
             hi = _hand_idx(my_cards)
             equity = float(self.preflop_table[hi, pos])
         else:
-            equity = 0.4
+            equity = 0.5
 
         call_amount = observation["opp_bet"] - observation["my_bet"]
         pot_odds = call_amount / (observation["pot_size"] + call_amount) if call_amount > 0 else 0.0
