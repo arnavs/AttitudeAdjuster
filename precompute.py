@@ -18,7 +18,7 @@ from math import comb
 from multiprocessing import Pool
 from gym_env import PokerEnv, WrappedEval
 
-MC_SAMPLES = 3
+MC_SAMPLES = 50
 DISCARD_TEMP = 10.0
 N_HANDS = 80730
 N_WORKERS = 8

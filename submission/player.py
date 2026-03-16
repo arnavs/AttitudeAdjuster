@@ -25,7 +25,7 @@ class PlayerAgent(Agent):
         self.hand_start_time = None
         self.cumulative_chips = 0
         self.evaluator = WrappedEval()
-        self.MC_SAMPLES = 25
+        self.MC_SAMPLES = 30
         if os.path.exists(_PREFLOP_TABLE_PATH):
             self.preflop_table = np.load(_PREFLOP_TABLE_PATH)
         else:
@@ -244,7 +244,7 @@ class PlayerAgent(Agent):
         if equity < 0.45:
             return self.action_types.FOLD.value, 0, 0, 0
 
-        if equity > 0.55 and valid_actions[self.action_types.RAISE.value]:
+        if equity > 0.8 and valid_actions[self.action_types.RAISE.value]:
             raise_amount = np.random.randint(min_raise, max_raise + 1)
             return self.action_types.RAISE.value, raise_amount, 0, 0
         if equity >= pot_odds and valid_actions[self.action_types.CALL.value]:
