@@ -283,8 +283,8 @@ class PlayerAgent(Agent):
             pos = observation["blind_position"]  # 0=SB, 1=BB
             hi = _hand_idx(my_cards)
             equity = float(self.preflop_table[hi])
-            if pos == 0:
-                equity = min(equity * 1.015, 1.0)
+            if pos == 0: # 5% equity advantage for small blind 
+                equity = min(equity * 1.05, 1.0)
         else:
             equity = 0.5
 
@@ -295,12 +295,12 @@ class PlayerAgent(Agent):
             return self.action_types.CHECK.value, 0, 0, 0
 
         # Facing a raise: fold weak hands
-        if equity < 0.45:
+        if equity < 0.65:
             return self.action_types.FOLD.value, 0, 0, 0
 
-        # if equity > 0.8 and valid_actions[self.action_types.RAISE.value]:
-        #     raise_amount = np.random.randint(min_raise, max_raise + 1)
-        #     return self.action_types.RAISE.value, raise_amount, 0, 0
+        if equity > 0.8 and valid_actions[self.action_types.RAISE.value]:
+            raise_amount = np.random.randint(min_raise, max_raise + 1)
+            return self.action_types.RAISE.value, raise_amount, 0, 0
         if equity >= pot_odds and valid_actions[self.action_types.CALL.value]:
             return self.action_types.CALL.value, 0, 0, 0
         return self.action_types.FOLD.value, 0, 0, 0

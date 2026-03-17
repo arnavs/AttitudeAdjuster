@@ -73,18 +73,17 @@ def _softmax_keep(hand5, flop, pool):
 
 
 def _compute_hand(hand):
-    """Compute avg(max) equity for a 5-card hand.
+    """Compute expected equity for a 5-card hand.
 
     For each MC scenario (opponent cards, flop, turn, river):
-      1. Simulate opponent's softmax discard
-      2. Evaluate all 10 of our keep-pairs on this board
-      3. Take the best (modeling that we see flop before discarding)
+      1. Simulate opponent's softmax discard (sees flop only)
+      2. Simulate our softmax discard (sees flop only)
+      3. Evaluate both chosen pairs on full board
     Average over all scenarios.
     """
     hi = hand_idx(hand)
     pool = [c for c in range(27) if c not in hand]
     pool_arr = np.array(pool)
-    keep_pairs = list(itertools.combinations(range(5), 2))
 
     wins = 0.0
     for _ in range(MC_SAMPLES):
@@ -93,32 +92,26 @@ def _compute_hand(hand):
         flop = sample[5:8]
         turn, river = sample[8], sample[9]
 
-        # Opponent keeps best pair via softmax (only knows flop, not turn/river)
+        # Opponent keeps best pair via softmax (sees flop only)
         opp_pool = [c for c in pool if c not in opp5 and c not in flop]
         ok1, ok2 = _softmax_keep(opp5, flop, opp_pool)
 
+        # We keep best pair via softmax (sees flop only)
+        our_pool = [c for c in pool if c not in hand and c not in flop]
+        h1, h2 = _softmax_keep(hand, flop, our_pool)
+
         board = [PokerEnv.int_to_card(int(c)) for c in [*flop, turn, river]]
+        our_treys = [PokerEnv.int_to_card(h1), PokerEnv.int_to_card(h2)]
         opp_treys = [PokerEnv.int_to_card(ok1), PokerEnv.int_to_card(ok2)]
+        our_rank = evaluator.evaluate(our_treys, board)
         opp_rank = evaluator.evaluate(opp_treys, board)
 
-        # Evaluate all 10 keep-pairs, take the best
-        best = 0.0
-        for i, j in keep_pairs:
-            h1, h2 = hand[i], hand[j]
-            our_treys = [PokerEnv.int_to_card(h1), PokerEnv.int_to_card(h2)]
-            our_rank = evaluator.evaluate(our_treys, board)
-            if our_rank < opp_rank:
-                eq = 1.0
-            elif our_rank == opp_rank:
-                eq = 0.5
-            else:
-                eq = 0.0
-            if eq > best:
-                best = eq
-        wins += best
+        if our_rank < opp_rank:
+            wins += 1.0
+        elif our_rank == opp_rank:
+            wins += 0.5
 
     equity = wins / MC_SAMPLES
-    # Store in both columns for compatibility (column 1 = BB is primary)
     return hi, equity
 
 
