@@ -200,7 +200,7 @@ class PlayerAgent(Agent):
 
         raise_fraction = (observation["opp_bet"] - observation["my_bet"]) / max(observation["pot_size"], 1)
         opp_win_rate = self.opp_showdown_wins / max(self.opp_showdowns, 1)
-        reraise_mult = 3.0 if reraise else 1.0
+        reraise_mult = 2.0 if reraise else 1.0
         TEMP = 1.0 * raise_fraction * opp_win_rate * reraise_mult
         equities = np.array([
             self._equity_vs_pair(h1, h2, my_cards_treys, community, observation)
