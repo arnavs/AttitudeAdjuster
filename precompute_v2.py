@@ -8,10 +8,9 @@ Shape:  (80730, 2), float32
 Value:  avg(max) equity — for each scenario, pick the best keep pair, then average.
 
 Strategy: 
-    - Compute BB equities
-    - Assume SB discards strategically 
-    - Assume that SB thinks I have a uniform hand when SB discards
-        - Nash would require SB to know that I have a slightly better hand
+    - Level 2 reasoning
+    - Compute equity of each pair assuming that opponent is Level 1 (optimally discarding against a uniform opponent)
+    - Then use those equities for my own discard decision (~/submission/player.py)
 
 Key fix from v1: uses avg(max) instead of max(avg), correctly modeling
 that we see the flop before choosing our keep pair.
@@ -24,7 +23,7 @@ from math import comb
 from multiprocessing import Pool
 from gym_env import PokerEnv, WrappedEval
 
-MC_SAMPLES = 50
+MC_SAMPLES = 30
 DISCARD_TEMP = 40.0
 N_HANDS = 80730
 N_WORKERS = 8
@@ -124,7 +123,7 @@ def compute_table():
     with Pool(N_WORKERS, initializer=_init_worker) as p:
         for idx, (hi, equity) in enumerate(p.imap(_compute_hand, all_hands, chunksize=1)):
             table[hi] = equity
-            if idx > 0 and idx % 1000 == 0:
+            if idx > 0 and idx % 10 == 0:
                 elapsed = time.time() - t0
                 eta = elapsed / idx * (len(all_hands) - idx)
                 print(f"  {idx}/{len(all_hands)}  elapsed={elapsed:.0f}s  eta={eta:.0f}s", flush=True)
