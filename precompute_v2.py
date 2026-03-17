@@ -9,7 +9,7 @@ Value:  avg(max) equity — for each scenario, pick the best keep pair, then ave
 
 Strategy: 
     - Level 2 reasoning
-    - Compute equity of each pair assuming that opponent is Level 1 (optimally discarding against a uniform opponent)
+    - Compute equity of each 5-card hand assuming that opponent is Level 1 (optimally discarding against a uniform opponent) and I am Level 1 (optimally discarding against a uniform opponent)
     - Then use those equities for my own discard decision (~/submission/player.py)
 
 Key fix from v1: uses avg(max) instead of max(avg), correctly modeling
