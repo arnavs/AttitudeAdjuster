@@ -27,8 +27,6 @@ class PlayerAgent(Agent):
         self.cumulative_chips = 0
         self.opp_showdown_wins = 1
         self.opp_showdowns = 2
-        self.opp_raises = 0
-        self.opp_actions = 0
         self.evaluator = WrappedEval()
         self.MC_SAMPLES = 60
         if os.path.exists(_PREFLOP_TABLE_PATH):
@@ -158,22 +156,15 @@ class PlayerAgent(Agent):
         # Raise only with strong equity; size proportional to strength
         if win_rate > 0.75 and valid_actions[self.action_types.RAISE.value]:
             frac = (win_rate - 0.75) / 0.25  # 0 at 0.75, 1 at 1.0
-            loc = min_raise + frac * (max_raise - min_raise)
-            raise_amount = int(np.random.logistic(loc, frac * (max_raise - min_raise) * 0.15))
+            raise_amount = int(min_raise + frac * (max_raise - min_raise))
             raise_amount = max(min_raise, min(raise_amount, max_raise))
             return self.action_types.RAISE.value, raise_amount, 0, 0
 
         if valid_actions[self.action_types.CHECK.value]:
             return self.action_types.CHECK.value, 0, 0, 0
 
-        # Call only if equity exceeds pot odds by a margin (adaptive to opponent aggression)
-        opp_raise_rate = self.opp_raises / max(self.opp_actions, 1)
-        base_margin = 0.1 + 0.2 * (1 - 2 * opp_raise_rate)
-        if observation["street"] == 1 and pot_odds < 0.2:
-            call_margin = 0.10
-        else:
-            call_margin = base_margin
-        if win_rate >= pot_odds + call_margin and valid_actions[self.action_types.CALL.value]:
+        # Call only if equity exceeds pot odds by a margin
+        if win_rate >= pot_odds + 0.2 and valid_actions[self.action_types.CALL.value]:
             return self.action_types.CALL.value, 0, 0, 0
 
         return self.action_types.FOLD.value, 0, 0, 0
@@ -191,7 +182,7 @@ class PlayerAgent(Agent):
         self.opp_pairs = list(itertools.combinations(remaining, 2))
         self.opp_weights = np.ones(len(self.opp_pairs), dtype=np.float64)
 
-    def _update_prior_raise(self, observation, reraise=False):
+    def _update_prior_raise(self, observation):
         """Shift posterior toward stronger hands when opponent raises on turn/river."""
         street = observation["street"]
         if street not in (2, 3):
@@ -204,8 +195,7 @@ class PlayerAgent(Agent):
 
         raise_fraction = (observation["opp_bet"] - observation["my_bet"]) / max(observation["pot_size"], 1)
         opp_win_rate = self.opp_showdown_wins / max(self.opp_showdowns, 1)
-        reraise_mult = 2.0 if reraise else 1.0
-        TEMP = 1.0 * raise_fraction * opp_win_rate * reraise_mult
+        TEMP = 1.0 * raise_fraction * opp_win_rate
         equities = np.array([
             self._equity_vs_pair(h1, h2, my_cards_treys, community, observation)
             for h1, h2 in self.opp_pairs
@@ -223,11 +213,8 @@ class PlayerAgent(Agent):
                 if reward < 0:  # we lost = opponent won
                     self.opp_showdown_wins += 1
         else:
-            self.opp_actions += 1
             if observation["opp_bet"] > observation["my_bet"]:
-                self.opp_raises += 1
-                reraise = observation["my_bet"] > 2
-                self._update_prior_raise(observation, reraise=reraise)
+                self._update_prior_raise(observation)
 
     def act(self, observation, reward, terminated, truncated, info):
 
