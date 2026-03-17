@@ -169,12 +169,14 @@ class PlayerAgent(Agent):
         self.opp_pairs = list(itertools.combinations(remaining, 2))
         self.opp_weights = np.ones(len(self.opp_pairs), dtype=np.float64)
 
-    def act(self, observation, reward, terminated, truncated, info):
+    def observe(self, observation, reward, terminated, truncated, info):
         self.cumulative_chips += reward
+
+    def act(self, observation, reward, terminated, truncated, info):
 
         hand_number = info.get("hand_number")
         hands_remaining = 1000 - (hand_number or 0)
-        if self.cumulative_chips > 1.51 * hands_remaining:
+        if self.cumulative_chips > 1.55 * hands_remaining:
             if observation["valid_actions"][self.action_types.DISCARD.value]:
                 return self.action_types.DISCARD.value, 0, 0, 1
             return self.action_types.FOLD.value, 0, 0, 0
