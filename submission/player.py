@@ -17,6 +17,25 @@ class PlayerAgent(Agent):
     def __init__(self, stream: bool = True):
         super().__init__(stream)
         self.action_types = PokerEnv.ActionType
+
+        # --- Strategy constants (all in one place) ---
+        self.PREFLOP_FOLD_THRESH = 0.45
+        self.PREFLOP_RAISE_THRESH = 0.65
+        self.BET_THRESH = 0.55        # value bet when can check
+        self.RAISE_THRESH = 0.75      # re-raise when facing bet
+        self.CALL_MARGIN = 0.2        # equity above pot odds to call
+        self.ADJ_SCALE = 0.15         # how much chip ratio shifts thresholds
+        self.ADJ_FLOOR = -0.3         # clamp on negative adjustment
+        self.FOLDOUT_RATIO = 1.55     # fold everything above this
+        self.SB_BOOST = 1.05          # preflop equity multiplier for SB
+        self.TIME_BUDGET = 3.5        # seconds per hand
+        self.DISCARD_TEMP = 50.0      # softmax temperature for discard
+        self.PRIOR_DISCARD_TEMP = 10.0  # opponent discard prior temperature
+        self.FLOP_GATE_CALL = 3       # skip flop prior update if call <= this
+        self.FLOP_GATE_BET = 6        # skip flop prior update if opp_bet <= this
+        self.THOMPSON_N = 40          # posterior samples
+        self.MC_SAMPLES = 60
+        # ---- Other shit ----
         self.opp_pairs = None    # list of (card1, card2) tuples
         self.opp_weights = None  # np.ndarray, uniform prior
         self.current_hand = None
@@ -70,7 +89,7 @@ class PlayerAgent(Agent):
             args.append((h1, h2, self.flop_cards, pool, self.MC_SAMPLES))
         equities = np.array([self._mc_equity(*a) for a in args])
 
-        TEMP = 10.0
+        TEMP = self.PRIOR_DISCARD_TEMP
         log_weights = TEMP * equities
         log_weights -= log_weights.max()
         self.opp_weights *= np.exp(log_weights)
@@ -82,7 +101,7 @@ class PlayerAgent(Agent):
         flop = [c for c in observation["community_cards"] if c != -1]
         opp_discards = [c for c in observation["opp_discarded_cards"] if c != -1]
 
-        DISCARD_TEMP = 50.0
+        DISCARD_TEMP = self.DISCARD_TEMP
         keep_pairs = list(itertools.combinations(range(5), 2))
         equities = []
         for i, j in keep_pairs:
@@ -138,9 +157,9 @@ class PlayerAgent(Agent):
                 self.equity_cache[cache_key] = result
                 return result
 
-    def _thompson_action(self, observation):
+    def _thompson_action(self, observation, hands_remaining):
         """Sample N pairs from posterior, compute equity for each, act based on equity."""
-        N = 40
+        N = self.THOMPSON_N
         valid_actions = observation["valid_actions"]
         min_raise = observation["min_raise"]
         max_raise = observation["max_raise"]
@@ -153,18 +172,30 @@ class PlayerAgent(Agent):
         call_amount = observation["opp_bet"] - observation["my_bet"]
         pot_odds = call_amount / (observation["pot_size"] + call_amount) if call_amount > 0 else 0.0
 
-        # Raise only with strong equity; size proportional to strength
-        if win_rate > 0.75 and valid_actions[self.action_types.RAISE.value]:
-            frac = (win_rate - 0.75) / 0.25  # 0 at 0.75, 1 at 1.0
+        # Risk posture: tighter when ahead, looser when behind
+        r = self.cumulative_chips / max(hands_remaining, 1)
+        adjustment = self.ADJ_SCALE * max(r, self.ADJ_FLOOR)
+
+        if valid_actions[self.action_types.CHECK.value]:
+            # No bet to face: bet for value or check
+            bet_threshold = self.BET_THRESH + adjustment
+            if win_rate > bet_threshold and valid_actions[self.action_types.RAISE.value]:
+                frac = (win_rate - bet_threshold) / (1.0 - bet_threshold)
+                raise_amount = int(min_raise + frac * (max_raise - min_raise))
+                raise_amount = max(min_raise, min(raise_amount, max_raise))
+                return self.action_types.RAISE.value, raise_amount, 0, 0
+            return self.action_types.CHECK.value, 0, 0, 0
+
+        # Facing a bet: raise, call, or fold
+        raise_threshold = self.RAISE_THRESH + adjustment
+        if win_rate > raise_threshold and valid_actions[self.action_types.RAISE.value]:
+            frac = (win_rate - raise_threshold) / (1.0 - raise_threshold)
             raise_amount = int(min_raise + frac * (max_raise - min_raise))
             raise_amount = max(min_raise, min(raise_amount, max_raise))
             return self.action_types.RAISE.value, raise_amount, 0, 0
 
-        if valid_actions[self.action_types.CHECK.value]:
-            return self.action_types.CHECK.value, 0, 0, 0
-
-        # Call only if equity exceeds pot odds by a margin
-        if win_rate >= pot_odds + 0.2 and valid_actions[self.action_types.CALL.value]:
+        call_margin = self.CALL_MARGIN + adjustment
+        if win_rate >= pot_odds + call_margin and valid_actions[self.action_types.CALL.value]:
             return self.action_types.CALL.value, 0, 0, 0
 
         return self.action_types.FOLD.value, 0, 0, 0
@@ -217,7 +248,7 @@ class PlayerAgent(Agent):
         else:
             if observation["opp_bet"] > observation["my_bet"]:
                 call_amount = observation["opp_bet"] - observation["my_bet"]
-                skip_flop = observation["street"] == 1 and call_amount <= 3 and observation["opp_bet"] <= 6
+                skip_flop = observation["street"] == 1 and call_amount <= self.FLOP_GATE_CALL and observation["opp_bet"] <= self.FLOP_GATE_BET
                 if not skip_flop:
                     self._update_prior_raise(observation)
 
@@ -225,7 +256,7 @@ class PlayerAgent(Agent):
 
         hand_number = info.get("hand_number")
         hands_remaining = 1000 - (hand_number or 0)
-        if self.cumulative_chips > 1.55 * hands_remaining:
+        if self.cumulative_chips > self.FOLDOUT_RATIO * hands_remaining:
             if observation["valid_actions"][self.action_types.DISCARD.value]:
                 return self.action_types.DISCARD.value, 0, 0, 1
             return self.action_types.FOLD.value, 0, 0, 0
@@ -257,7 +288,7 @@ class PlayerAgent(Agent):
             self.logger.info(f"Prior initialized: {len(self.opp_pairs)} pairs, weights sum={self.opp_weights.sum():.3f}")
 
         hand_elapsed = time.time() - (self.hand_start_time or time.time())
-        if hand_elapsed > 3.5:
+        if hand_elapsed > self.TIME_BUDGET:
             self.logger.info(f"Hand {hand_number} time budget exceeded ({hand_elapsed:.1f}s), checking/folding")
             if observation["valid_actions"][self.action_types.CHECK.value]:
                 return self.action_types.CHECK.value, 0, 0, 0
@@ -267,11 +298,11 @@ class PlayerAgent(Agent):
         if street == 0:
             return self._act_preflop(observation)
         elif street == 1:
-            return self._act_flop(observation)
+            return self._act_flop(observation, hands_remaining)
         elif street == 2:
-            return self._act_turn(observation)
+            return self._act_turn(observation, hands_remaining)
         elif street == 3:
-            return self._act_river(observation)
+            return self._act_river(observation, hands_remaining)
 
     def _act_preflop(self, observation):
         valid_actions = observation["valid_actions"]
@@ -283,33 +314,32 @@ class PlayerAgent(Agent):
             pos = observation["blind_position"]  # 0=SB, 1=BB
             hi = _hand_idx(my_cards)
             equity = float(self.preflop_table[hi])
-            if pos == 0: # 5% equity advantage for small blind 
-                equity = min(equity * 1.05, 1.0)
+            if pos == 0:
+                equity = min(equity * self.SB_BOOST, 1.0)
         else:
             equity = 0.5
 
         call_amount = observation["opp_bet"] - observation["my_bet"]
         pot_odds = call_amount / (observation["pot_size"] + call_amount) if call_amount > 0 else 0.0
 
-        if valid_actions[self.action_types.CHECK.value]:
-            return self.action_types.CHECK.value, 0, 0, 0
-
         # Facing a raise: fold weak hands
-        if equity < 0.65:
+        if equity < self.PREFLOP_FOLD_THRESH and not valid_actions[self.action_types.CHECK.value]:
             return self.action_types.FOLD.value, 0, 0, 0
 
-        if equity > 0.8 and valid_actions[self.action_types.RAISE.value]:
+        if equity > self.PREFLOP_RAISE_THRESH and valid_actions[self.action_types.RAISE.value]:
             raise_amount = np.random.randint(min_raise, max_raise + 1)
             return self.action_types.RAISE.value, raise_amount, 0, 0
+        if valid_actions[self.action_types.CHECK.value]:
+            return self.action_types.CHECK.value, 0, 0, 0
         if equity >= pot_odds and valid_actions[self.action_types.CALL.value]:
             return self.action_types.CALL.value, 0, 0, 0
         return self.action_types.FOLD.value, 0, 0, 0
 
 
-    def _act_flop(self, observation):
-        return self._thompson_action(observation)
+    def _act_flop(self, observation, hands_remaining):
+        return self._thompson_action(observation, hands_remaining)
 
-    def _act_turn(self, observation):
+    def _act_turn(self, observation, hands_remaining):
         if 2 not in self.zeroed_streets:
             community = set(c for c in observation["community_cards"] if c != -1)
             for i, (h1, h2) in enumerate(self.opp_pairs):
@@ -317,9 +347,9 @@ class PlayerAgent(Agent):
                     self.opp_weights[i] = 0.0
             self.opp_weights /= self.opp_weights.sum()
             self.zeroed_streets.add(2)
-        return self._thompson_action(observation)
+        return self._thompson_action(observation, hands_remaining)
 
-    def _act_river(self, observation):
+    def _act_river(self, observation, hands_remaining):
         if 3 not in self.zeroed_streets:
             community = set(c for c in observation["community_cards"] if c != -1)
             for i, (h1, h2) in enumerate(self.opp_pairs):
@@ -327,4 +357,4 @@ class PlayerAgent(Agent):
                     self.opp_weights[i] = 0.0
             self.opp_weights /= self.opp_weights.sum()
             self.zeroed_streets.add(3)
-        return self._thompson_action(observation)
+        return self._thompson_action(observation, hands_remaining)
