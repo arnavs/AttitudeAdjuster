@@ -1,5 +1,5 @@
 """
-Replay match CSV: keep opponent (Team 1) actions fixed, let our updated bot play Team 0.
+Replay match CSV: keep opponent (Team 0) actions fixed, let our updated bot play Team 1.
 """
 import ast
 import csv
@@ -19,8 +19,8 @@ ACTION_MAP = {
 
 def card_str_to_int(card_str):
     """Convert e.g. '7d' -> int index in [0,27)."""
-    RANKS = PokerEnv.RANKS  # "23456789A"
-    SUITS = PokerEnv.SUITS  # "dhs"
+    RANKS = PokerEnv.RANKS
+    SUITS = PokerEnv.SUITS
     rank = card_str[0]
     suit = card_str[1]
     return SUITS.index(suit) * len(RANKS) + RANKS.index(rank)
@@ -36,32 +36,17 @@ def load_hands(csv_path):
     """Parse CSV into dict of hand_number -> list of action rows."""
     hands = {}
     with open(csv_path) as f:
-        # Skip comment line
         first = f.readline()
         if not first.startswith("hand_number"):
             reader = csv.DictReader(f)
         else:
             f.seek(0)
-            # skip comment
             f.readline()
             reader = csv.DictReader(f)
         for row in reader:
             hnum = int(row["hand_number"])
             hands.setdefault(hnum, []).append(row)
     return hands
-
-
-def reconstruct_deck(row):
-    """Reconstruct the 27-card deck order from logged cards.
-
-    Cards are dealt: 5 to player0, 5 to player1, 5 community, rest unknown.
-    We just need the first 15 in the right order; remaining don't matter.
-    """
-    p0_cards = parse_card_list(row["team_0_cards"])
-    p1_cards = parse_card_list(row["team_1_cards"])
-
-    # Find community cards from the last row of the hand (most revealed)
-    return p0_cards, p1_cards
 
 
 def get_full_community(rows):
@@ -71,9 +56,7 @@ def get_full_community(rows):
         if len(board) == 5:
             return board
         if len(board) > 0:
-            # Might be partial; keep looking
             pass
-    # Return whatever we have from last row
     return parse_card_list(rows[-1]["board_cards"])
 
 
@@ -90,28 +73,23 @@ def build_deck_order(rows):
     dealt = set(p0_cards + p1_cards + community)
     remaining = [c for c in range(27) if c not in dealt]
 
-    # PokerEnv deals: 5 to p0, 5 to p1, 5 community
     deck = p0_cards + p1_cards + community + remaining
     return deck
 
 
 def get_small_blind_player(rows):
     """Determine who was small blind from the first preflop action."""
-    # First action in preflop is by small blind (SB acts first preflop)
-    # But actually the SB posts first, then acts first
-    # From the CSV, first row's team_0_bet and team_1_bet tell us:
-    # SB posts 1, BB posts 2
     first = rows[0]
     t0_bet = int(first["team_0_bet"])
     t1_bet = int(first["team_1_bet"])
     if t0_bet <= t1_bet:
-        return 0  # team 0 is SB
+        return 0
     else:
-        return 1  # team 1 is SB
+        return 1
 
 
 def main():
-    csv_path = sys.argv[1] if len(sys.argv) > 1 else "matches/match_16159.csv"
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else "matches/example.csv"
 
     hands = load_hands(csv_path)
     print(f"Loaded {len(hands)} hands from {csv_path}")
@@ -119,7 +97,7 @@ def main():
     bot = PlayerAgent(stream=False)
     env = PokerEnv()
 
-    bankroll = 0  # Team 0 cumulative
+    bankroll = 0  # Team 1 cumulative
     wins = 0
     losses = 0
     ties = 0
@@ -129,11 +107,10 @@ def main():
     for hnum in sorted(hands.keys()):
         rows = hands[hnum]
 
-        # Track original result
-        last_row = rows[-1]
+        # Track original result (Team 1)
         if hnum + 1 in hands:
             next_first = hands[hnum + 1][0]
-            orig_bank_after = int(next_first["team_0_bankroll"])
+            orig_bank_after = int(next_first["team_1_bankroll"])
             orig_delta = orig_bank_after - original_bankroll
             original_bankroll = orig_bank_after
         else:
@@ -144,10 +121,10 @@ def main():
         sb_player = get_small_blind_player(rows)
         (obs0, obs1), info = env.reset(options={"cards": deck, "small_blind_player": sb_player})
 
-        # Collect Team 1's actions in order
+        # Collect Team 0's (opponent) actions in order
         opp_actions = []
         for row in rows:
-            if int(row["active_team"]) == 1:
+            if int(row["active_team"]) == 0:
                 action_type = ACTION_MAP[row["action_type"]]
                 amount = int(row["action_amount"])
                 keep1 = int(row["action_keep_1"])
@@ -163,12 +140,12 @@ def main():
 
         while not terminated:
             acting = env.acting_agent
-            if acting == 0:
-                # Our bot acts
-                obs = obs0
-                action = bot.act(obs, reward[0], terminated, truncated, hand_info)
+            if acting == 1:
+                # Our bot acts as Team 1
+                obs = obs1
+                action = bot.act(obs, reward[1], terminated, truncated, hand_info)
             else:
-                # Replay opponent's logged action
+                # Replay opponent's (Team 0) logged action
                 if opp_idx < len(opp_actions):
                     action = opp_actions[opp_idx]
                     opp_idx += 1
@@ -182,7 +159,7 @@ def main():
             skipped += 1
             continue
 
-        delta = reward[0]
+        delta = reward[1]
         bankroll += delta
 
         if delta > 0:

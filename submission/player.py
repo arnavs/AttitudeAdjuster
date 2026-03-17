@@ -25,10 +25,10 @@ class PlayerAgent(Agent):
         self.hand_start_time = None
         self.equity_cache = {}
         self.cumulative_chips = 0
-        self.opp_showdown_wins = 0
-        self.opp_showdowns = 0
+        self.opp_showdown_wins = 1
+        self.opp_showdowns = 2
         self.evaluator = WrappedEval()
-        self.MC_SAMPLES = 30
+        self.MC_SAMPLES = 60
         if os.path.exists(_PREFLOP_TABLE_PATH):
             self.preflop_table = np.load(_PREFLOP_TABLE_PATH)
         else:
@@ -140,7 +140,7 @@ class PlayerAgent(Agent):
 
     def _thompson_action(self, observation):
         """Sample N pairs from posterior, compute equity for each, act based on equity."""
-        N = 20
+        N = 40
         valid_actions = observation["valid_actions"]
         min_raise = observation["min_raise"]
         max_raise = observation["max_raise"]
