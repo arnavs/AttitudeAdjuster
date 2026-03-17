@@ -168,7 +168,11 @@ class PlayerAgent(Agent):
 
         # Call only if equity exceeds pot odds by a margin (adaptive to opponent aggression)
         opp_raise_rate = self.opp_raises / max(self.opp_actions, 1)
-        call_margin = 0.1 + 0.2 * (1 - 2 * opp_raise_rate)
+        base_margin = 0.1 + 0.2 * (1 - 2 * opp_raise_rate)
+        if observation["street"] == 1 and pot_odds < 0.2:
+            call_margin = 0.10
+        else:
+            call_margin = base_margin
         if win_rate >= pot_odds + call_margin and valid_actions[self.action_types.CALL.value]:
             return self.action_types.CALL.value, 0, 0, 0
 
