@@ -23,7 +23,10 @@ class PlayerAgent(Agent):
         self.flop_cards = None   # stored once at flop, reused on turn/river
         self.zeroed_streets = set()
         self.hand_start_time = None
+        self.equity_cache = {}
         self.cumulative_chips = 0
+        self.opp_showdown_wins = 0
+        self.opp_showdowns = 0
         self.evaluator = WrappedEval()
         self.MC_SAMPLES = 30
         if os.path.exists(_PREFLOP_TABLE_PATH):
@@ -97,12 +100,18 @@ class PlayerAgent(Agent):
 
     def _equity_vs_pair(self, h1, h2, my_cards_treys, community, observation):
         """Equity of our hand vs a single opp pair. Exact: river direct, turn enumerate."""
+        street = observation["street"]
+        cache_key = (h1, h2, street)
+        if cache_key in self.equity_cache:
+            return self.equity_cache[cache_key]
         opp_treys = [PokerEnv.int_to_card(h1), PokerEnv.int_to_card(h2)]
         if len(community) == 5:
             board = [PokerEnv.int_to_card(c) for c in community]
             our_rank = self.evaluator.evaluate(my_cards_treys, board)
             opp_rank = self.evaluator.evaluate(opp_treys, board)
-            return 1.0 if our_rank < opp_rank else (0.5 if our_rank == opp_rank else 0.0)
+            result = 1.0 if our_rank < opp_rank else (0.5 if our_rank == opp_rank else 0.0)
+            self.equity_cache[cache_key] = result
+            return result
         else:
             dead = set(observation["my_cards"]) | set(observation["my_discarded_cards"]) | set(observation["opp_discarded_cards"]) | set(community) | {h1, h2}
             dead.discard(-1)
@@ -114,7 +123,9 @@ class PlayerAgent(Agent):
                     our_rank = self.evaluator.evaluate(my_cards_treys, board)
                     opp_rank = self.evaluator.evaluate(opp_treys, board)
                     wins += 1.0 if our_rank < opp_rank else (0.5 if our_rank == opp_rank else 0.0)
-                return wins / len(pool)
+                result = wins / len(pool)
+                self.equity_cache[cache_key] = result
+                return result
             else:  # flop: MC over (turn, river)
                 wins = 0.0
                 for _ in range(self.MC_SAMPLES):
@@ -123,7 +134,9 @@ class PlayerAgent(Agent):
                     our_rank = self.evaluator.evaluate(my_cards_treys, board)
                     opp_rank = self.evaluator.evaluate(opp_treys, board)
                     wins += 1.0 if our_rank < opp_rank else (0.5 if our_rank == opp_rank else 0.0)
-                return wins / self.MC_SAMPLES
+                result = wins / self.MC_SAMPLES
+                self.equity_cache[cache_key] = result
+                return result
 
     def _thompson_action(self, observation):
         """Sample N pairs from posterior, compute equity for each, act based on equity."""
@@ -169,8 +182,39 @@ class PlayerAgent(Agent):
         self.opp_pairs = list(itertools.combinations(remaining, 2))
         self.opp_weights = np.ones(len(self.opp_pairs), dtype=np.float64)
 
+    def _update_prior_raise(self, observation):
+        """Shift posterior toward stronger hands when opponent raises on turn/river."""
+        street = observation["street"]
+        if street not in (2, 3):
+            return
+        if self.opp_pairs is None:
+            return
+
+        community = [c for c in observation["community_cards"] if c != -1]
+        my_cards_treys = [PokerEnv.int_to_card(c) for c in observation["my_cards"] if c != -1]
+
+        raise_fraction = (observation["opp_bet"] - observation["my_bet"]) / max(observation["pot_size"], 1)
+        opp_win_rate = self.opp_showdown_wins / max(self.opp_showdowns, 1)
+        TEMP = 3.0 * raise_fraction * opp_win_rate
+        equities = np.array([
+            self._equity_vs_pair(h1, h2, my_cards_treys, community, observation)
+            for h1, h2 in self.opp_pairs
+        ])
+        log_weights = TEMP * equities
+        log_weights -= log_weights.max()
+        self.opp_weights *= np.exp(log_weights)
+        self.opp_weights /= self.opp_weights.sum()
+
     def observe(self, observation, reward, terminated, truncated, info):
         self.cumulative_chips += reward
+        if terminated:
+            if observation["opp_bet"] == observation["my_bet"]:
+                self.opp_showdowns += 1
+                if reward < 0:  # we lost = opponent won
+                    self.opp_showdown_wins += 1
+        else:
+            if observation["opp_bet"] > observation["my_bet"]:
+                self._update_prior_raise(observation)
 
     def act(self, observation, reward, terminated, truncated, info):
 
@@ -188,6 +232,7 @@ class PlayerAgent(Agent):
             self.flop_cards = None
             self.zeroed_streets = set()
             self.hand_start_time = time.time()
+            self.equity_cache = {}
 
         self.logger.info(f"Hand {hand_number} street {observation["street"]}")
 
