@@ -183,9 +183,9 @@ class PlayerAgent(Agent):
         self.opp_weights = np.ones(len(self.opp_pairs), dtype=np.float64)
 
     def _update_prior_raise(self, observation):
-        """Shift posterior toward stronger hands when opponent raises on turn/river."""
+        """Shift posterior toward stronger hands when opponent raises."""
         street = observation["street"]
-        if street not in (2, 3):
+        if street not in (1, 2, 3):
             return
         if self.opp_pairs is None:
             return
@@ -196,13 +196,15 @@ class PlayerAgent(Agent):
         raise_fraction = (observation["opp_bet"] - observation["my_bet"]) / max(observation["pot_size"], 1)
         opp_win_rate = self.opp_showdown_wins / max(self.opp_showdowns, 1)
         TEMP = 1.0 * raise_fraction * opp_win_rate
-        equities = np.array([
+        active_pairs = [(i, h1, h2) for i, (h1, h2) in enumerate(self.opp_pairs) if self.opp_weights[i] > 0]
+        active_equities = np.array([
             self._equity_vs_pair(h1, h2, my_cards_treys, community, observation)
-            for h1, h2 in self.opp_pairs
+            for _, h1, h2 in active_pairs
         ])
-        log_weights = TEMP * equities
+        log_weights = TEMP * active_equities
         log_weights -= log_weights.max()
-        self.opp_weights *= np.exp(log_weights)
+        for k, (i, _, _) in enumerate(active_pairs):
+            self.opp_weights[i] *= np.exp(log_weights[k])
         self.opp_weights /= self.opp_weights.sum()
 
     def observe(self, observation, reward, terminated, truncated, info):
@@ -214,7 +216,10 @@ class PlayerAgent(Agent):
                     self.opp_showdown_wins += 1
         else:
             if observation["opp_bet"] > observation["my_bet"]:
-                self._update_prior_raise(observation)
+                call_amount = observation["opp_bet"] - observation["my_bet"]
+                skip_flop = observation["street"] == 1 and call_amount <= 3 and observation["opp_bet"] <= 6
+                if not skip_flop:
+                    self._update_prior_raise(observation)
 
     def act(self, observation, reward, terminated, truncated, info):
 
@@ -277,7 +282,9 @@ class PlayerAgent(Agent):
             my_cards = [c for c in observation["my_cards"] if c != -1]
             pos = observation["blind_position"]  # 0=SB, 1=BB
             hi = _hand_idx(my_cards)
-            equity = float(self.preflop_table[hi, pos])
+            equity = float(self.preflop_table[hi])
+            if pos == 0:
+                equity = min(equity * 1.015, 1.0)
         else:
             equity = 0.5
 
@@ -291,9 +298,9 @@ class PlayerAgent(Agent):
         if equity < 0.45:
             return self.action_types.FOLD.value, 0, 0, 0
 
-        if equity > 0.8 and valid_actions[self.action_types.RAISE.value]:
-            raise_amount = np.random.randint(min_raise, max_raise + 1)
-            return self.action_types.RAISE.value, raise_amount, 0, 0
+        # if equity > 0.8 and valid_actions[self.action_types.RAISE.value]:
+        #     raise_amount = np.random.randint(min_raise, max_raise + 1)
+        #     return self.action_types.RAISE.value, raise_amount, 0, 0
         if equity >= pot_odds and valid_actions[self.action_types.CALL.value]:
             return self.action_types.CALL.value, 0, 0, 0
         return self.action_types.FOLD.value, 0, 0, 0

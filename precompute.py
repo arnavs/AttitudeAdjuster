@@ -102,6 +102,7 @@ def equity_as_sb(h1, h2, pool, n_samples=MC_SAMPLES):
         ok1, ok2 = _softmax_keep(opp5, flop, bb_pool)
         opp_discards = [c for c in opp5 if c != ok1 and c != ok2]
         # SB now knows opp_discards — exclude from turn/river pool
+        # THIS IS WRONG, c not in opp5 includes c not in opp_discards
         remaining = np.array([c for c in pool if c not in opp5 and c not in flop and c not in opp_discards])
         turn, river = np.random.choice(remaining, size=2, replace=False)
         board = [PokerEnv.int_to_card(int(c)) for c in [*flop, turn, river]]
