@@ -18,8 +18,8 @@ from math import comb
 from multiprocessing import Pool
 from gym_env import PokerEnv, WrappedEval
 
-MC_SAMPLES = 50
-DISCARD_TEMP = 10.0
+MC_SAMPLES = 30
+DISCARD_TEMP = 40.0
 N_HANDS = 80730
 N_WORKERS = 8
 
@@ -108,7 +108,7 @@ def equity_as_sb(h1, h2, pool, n_samples=MC_SAMPLES):
         our_rank = evaluator.evaluate([PokerEnv.int_to_card(h1), PokerEnv.int_to_card(h2)], board)
         opp_rank = evaluator.evaluate([PokerEnv.int_to_card(ok1), PokerEnv.int_to_card(ok2)], board)
         if our_rank < opp_rank:
-            wins += 0.9
+            wins += 1.0
         elif our_rank == opp_rank:
             wins += 0.5
     return wins / n_samples
@@ -139,7 +139,7 @@ def compute_table():
     t0 = time.time()
 
     with Pool(N_WORKERS, initializer=_init_worker) as p:
-        for idx, (hi, sb, bb) in enumerate(p.imap(_compute_hand, all_hands, chunksize=100)):
+        for idx, (hi, sb, bb) in enumerate(p.imap(_compute_hand, all_hands, chunksize=1)):
             table[hi, 0] = sb
             table[hi, 1] = bb
             if idx > 0:
