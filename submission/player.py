@@ -154,8 +154,8 @@ class PlayerAgent(Agent):
         pot_odds = call_amount / (observation["pot_size"] + call_amount) if call_amount > 0 else 0.0
 
         # Raise only with strong equity; size proportional to strength
-        if win_rate > 0.65 and valid_actions[self.action_types.RAISE.value]:
-            frac = (win_rate - 0.65) / 0.35  # 0 at 0.65, 1 at 1.0
+        if win_rate > 0.75 and valid_actions[self.action_types.RAISE.value]:
+            frac = (win_rate - 0.75) / 0.25  # 0 at 0.75, 1 at 1.0
             raise_amount = int(min_raise + frac * (max_raise - min_raise))
             raise_amount = max(min_raise, min(raise_amount, max_raise))
             return self.action_types.RAISE.value, raise_amount, 0, 0
@@ -164,7 +164,7 @@ class PlayerAgent(Agent):
             return self.action_types.CHECK.value, 0, 0, 0
 
         # Call only if equity exceeds pot odds by a margin
-        if win_rate >= pot_odds + 0.1 and valid_actions[self.action_types.CALL.value]:
+        if win_rate >= pot_odds + 0.2 and valid_actions[self.action_types.CALL.value]:
             return self.action_types.CALL.value, 0, 0, 0
 
         return self.action_types.FOLD.value, 0, 0, 0
