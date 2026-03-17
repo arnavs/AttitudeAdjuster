@@ -126,15 +126,17 @@ class PlayerAgent(Agent):
                 result = wins / len(pool)
                 self.equity_cache[cache_key] = result
                 return result
-            else:  # flop: MC over (turn, river)
+            else:  # flop: enumerate all (turn, river) pairs
                 wins = 0.0
-                for _ in range(self.MC_SAMPLES):
-                    turn, river = np.random.choice(pool, size=2, replace=False)
-                    board = [PokerEnv.int_to_card(c) for c in community + [int(turn), int(river)]]
-                    our_rank = self.evaluator.evaluate(my_cards_treys, board)
-                    opp_rank = self.evaluator.evaluate(opp_treys, board)
-                    wins += 1.0 if our_rank < opp_rank else (0.5 if our_rank == opp_rank else 0.0)
-                result = wins / self.MC_SAMPLES
+                count = 0
+                for i in range(len(pool)):
+                    for j in range(i + 1, len(pool)):
+                        board = [PokerEnv.int_to_card(c) for c in community + [int(pool[i]), int(pool[j])]]
+                        our_rank = self.evaluator.evaluate(my_cards_treys, board)
+                        opp_rank = self.evaluator.evaluate(opp_treys, board)
+                        wins += 1.0 if our_rank < opp_rank else (0.5 if our_rank == opp_rank else 0.0)
+                        count += 1
+                result = wins / count
                 self.equity_cache[cache_key] = result
                 return result
 
@@ -169,6 +171,15 @@ class PlayerAgent(Agent):
 
         return self.action_types.FOLD.value, 0, 0, 0
 
+    def _warm_cache(self, observation):
+        """Precompute equity for all opponent pairs on current street, filling the cache."""
+        if self.opp_pairs is None:
+            return
+        my_cards_treys = [PokerEnv.int_to_card(c) for c in observation["my_cards"] if c != -1]
+        community = [c for c in observation["community_cards"] if c != -1]
+        for h1, h2 in self.opp_pairs:
+            self._equity_vs_pair(h1, h2, my_cards_treys, community, observation)
+
     def _init_prior(self, observation):
         """Initialize uniform prior over opponent hole card pairs after both players have discarded."""
         my_cards = set(c for c in observation["my_cards"] if c != -1)
@@ -183,9 +194,9 @@ class PlayerAgent(Agent):
         self.opp_weights = np.ones(len(self.opp_pairs), dtype=np.float64)
 
     def _update_prior_raise(self, observation):
-        """Shift posterior toward stronger hands when opponent raises on turn/river."""
+        """Shift posterior toward stronger hands when opponent raises on flop/turn/river."""
         street = observation["street"]
-        if street not in (2, 3):
+        if street not in (1, 2, 3):
             return
         if self.opp_pairs is None:
             return
@@ -195,7 +206,8 @@ class PlayerAgent(Agent):
 
         raise_fraction = (observation["opp_bet"] - observation["my_bet"]) / max(observation["pot_size"], 1)
         opp_win_rate = self.opp_showdown_wins / max(self.opp_showdowns, 1)
-        TEMP = 1.0 * raise_fraction * opp_win_rate
+        base_temp = 0.3 if street == 1 else 1.0
+        TEMP = base_temp * raise_fraction * opp_win_rate
         equities = np.array([
             self._equity_vs_pair(h1, h2, my_cards_treys, community, observation)
             for h1, h2 in self.opp_pairs
@@ -300,6 +312,7 @@ class PlayerAgent(Agent):
 
 
     def _act_flop(self, observation):
+        self._warm_cache(observation)
         return self._thompson_action(observation)
 
     def _act_turn(self, observation):
