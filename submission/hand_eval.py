@@ -11,6 +11,9 @@ Card encoding:
   suit = card // 9  (0=d, 1=h, 2=s)
 """
 
+# LEVEL 1: ASSUMES THAT OPP IS LEVEL 0 (NOT DISCARDING OPTIMALLY)
+# TBD: FIX THIS 
+
 import sys
 import os
 import numpy as np
@@ -101,8 +104,7 @@ def best_keep_pair(hand5, board3, dead, n_mc=50):
     for i, j in combinations(range(5), 2):
         h1, h2 = hand5[i], hand5[j]
         # remove kept cards from dead for equity calc
-        dead_for_pair = dead_full - {h1, h2}
-        eq = mc_equity([h1, h2], board3, dead_for_pair, n_samples=n_mc)
+        eq = mc_equity([h1, h2], board3, dead_full, n_samples=n_mc)
         equities.append(eq)
 
     best_idx = int(np.argmax(equities))
