@@ -8,6 +8,11 @@ import logging
 from gym_env import PokerEnv, WrappedEval
 from submission.traversal import GameState, compute_bet_sizes
 from submission.encoder import FOLD, CHECK, CALL, BET_SMALL, BET_LARGE
+from submission.network import (
+    make_betting_net,
+    get_policy_distribution,
+    get_regret_matching_strategy,
+)
 
 
 def assert_state_matches_env(state, env, label):
@@ -49,6 +54,12 @@ env = make_test_env(cards)
 
 assert_state_matches_env(state, env, "initial")
 print(f"PASS: initial state bets={state.bets} pot={state.pot} acting={state.acting_player}")
+
+# folding remains legal even when facing no outstanding bet, matching gym_env
+initial_mask = state.legal_betting_mask(0)
+assert initial_mask[FOLD] == 1.0
+assert env._get_valid_actions(0)[PokerEnv.ActionType.FOLD.value] == 1
+print("PASS: fold stays legal at equal bets")
 
 # cards valid and disjoint
 assert len(state.hole[0]) == 5
@@ -127,5 +138,23 @@ print(f"PASS: BET_SMALL maps to raise_amount semantics, bets={state.bets}, min_r
 ended = state.apply_bet(0, FOLD)
 assert ended and state.terminal and state.winner == 1
 print("PASS: fold after raise terminates correctly")
+
+# strategy nets should be read as policies, not regret-matched advantages
+net = make_betting_net()
+with np.errstate(all="ignore"):
+    for param in net.parameters():
+        param.data.zero_()
+    final_linear = net.net[-1]
+    final_linear.bias.data[:] = 0.0
+    final_linear.bias.data[0] = 5.0
+    final_linear.bias.data[3] = 1.0
+
+vec = np.zeros(203, dtype=np.float32)
+mask = np.array([1, 1, 0, 1, 0], dtype=np.float32)
+policy_probs = get_policy_distribution(net, vec, mask)
+rm_probs = get_regret_matching_strategy(net, vec, mask)
+assert policy_probs[0] > policy_probs[3] > 0.0
+assert rm_probs[0] > 0.0 and rm_probs[1] == 0.0
+print("PASS: policy inference is distinct from regret matching")
 
 print("\nAll submission GameState regression tests passed.")

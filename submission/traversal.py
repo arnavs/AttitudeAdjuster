@@ -20,7 +20,7 @@ from encoder import (
     FOLD, CHECK, CALL, BET_SMALL, BET_LARGE,
     N_BETTING_ACTIONS, N_DISCARD_ACTIONS,
 )
-from network import get_strategy
+from network import get_regret_matching_strategy
 
 
 # ── bet sizing ────────────────────────────────────────────────────────────────
@@ -124,8 +124,7 @@ class GameState:
         mask = np.zeros(N_BETTING_ACTIONS, dtype=np.float32)
 
         # fold is always legal in the environment on betting nodes
-        if call_amount > 0:
-            mask[FOLD] = 1.0
+        mask[FOLD] = 1.0
 
         if call_amount == 0:
             mask[CHECK] = 1.0
@@ -270,17 +269,6 @@ def traverse(state, traverser,
     if state.terminal:
         return state.payoff(traverser)
 
-    # both all-in: run out remaining streets to showdown
-    if state.stacks[0] == 0 and state.stacks[1] == 0:
-        # if discards haven't happened yet, do them randomly
-        if state.street <= 1:
-            for p in [1, 0]:
-                if not state.discard_done[p]:
-                    state.apply_discard(p, 0, 1)
-        while state.street <= 3 and not state.terminal:
-            state.advance_street()
-        return state.payoff(traverser)
-
     # ── discard nodes (BB first, then SB) ────────────────────────────────────
     if state.street == 1:
         if not state.discard_done[1]:  # BB discards first
@@ -328,7 +316,7 @@ def traverse(state, traverser,
         return state.payoff(traverser)
 
     vec = encode_infoset(obs, is_discard_node=False)
-    strategy = get_strategy(value_betting_nets[player], vec, mask, device)
+    strategy = get_regret_matching_strategy(value_betting_nets[player], vec, mask, device)
 
     is_traverser = (player == traverser)
     strategy_betting_bufs[player].add(vec, strategy, iteration)
@@ -394,7 +382,7 @@ def _traverse_discard(state, player, traverser,
     obs      = state.obs(player)
     mask     = discard_mask()  # all 10 pairs legal
     vec      = encode_infoset(obs, is_discard_node=True)
-    strategy = get_strategy(value_discard_nets[player], vec, mask, device)
+    strategy = get_regret_matching_strategy(value_discard_nets[player], vec, mask, device)
 
     is_traverser = (player == traverser)
     strategy_discard_bufs[player].add(vec, strategy, iteration)
