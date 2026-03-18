@@ -45,6 +45,7 @@ class PlayerAgent(Agent):
         self.cumulative_chips = 0
         self.opp_showdown_wins = 1
         self.opp_showdowns = 2
+        self.hands_won = 0
         self.evaluator = WrappedEval()
         self.MC_SAMPLES = 60
         if os.path.exists(_PREFLOP_TABLE_PATH):
@@ -184,6 +185,13 @@ class PlayerAgent(Agent):
         r = self.cumulative_chips / max(hands_remaining, 1)
         adjustment = self.ADJ_SCALE * max(r, self.ADJ_FLOOR)
 
+        # If consistently losing, tighten up
+        hand_number = 1000 - hands_remaining
+        if hand_number > 50:
+            win_rate_overall = self.hands_won / hand_number
+            if win_rate_overall < 0.4:
+                adjustment = max(adjustment, 0.1)
+
         if valid_actions[self.action_types.CHECK.value]:
             # No bet to face: bet for value or check
             bet_threshold = self.BET_THRESH + adjustment
@@ -296,6 +304,8 @@ class PlayerAgent(Agent):
     def observe(self, observation, reward, terminated, truncated, info):
         self.cumulative_chips += reward
         if terminated:
+            if reward > 0:
+                self.hands_won += 1
             if observation["opp_bet"] == observation["my_bet"]:
                 self.opp_showdowns += 1
                 if reward < 0:  # we lost = opponent won
@@ -383,7 +393,7 @@ class PlayerAgent(Agent):
             return self.action_types.RAISE.value, raise_amount, 0, 0
         if valid_actions[self.action_types.CHECK.value]:
             return self.action_types.CHECK.value, 0, 0, 0
-        if equity >= pot_odds and valid_actions[self.action_types.CALL.value]:
+        if equity >= pot_odds + self.CALL_MARGIN and valid_actions[self.action_types.CALL.value]:
             return self.action_types.CALL.value, 0, 0, 0
         return self.action_types.FOLD.value, 0, 0, 0
 
