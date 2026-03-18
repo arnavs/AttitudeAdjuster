@@ -19,6 +19,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from multiprocessing import Pool
+from torch.utils.tensorboard import SummaryWriter
 
 # ── path setup ────────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -31,8 +32,8 @@ from network import (
 from traversal import run_traversal
 
 # ── hyperparameters ───────────────────────────────────────────────────────────
-N_ITERATIONS    = 100_000
-K_TRAVERSALS    = 8         # per iteration per player (one per core)
+N_ITERATIONS    = 50_000
+K_TRAVERSALS    = 4         # per iteration per player (one per core)
 TRAIN_EVERY     = 10        # retrain value nets every N iterations
 VALUE_BUF_SIZE  = 500_000
 STRAT_BUF_SIZE  = 2_000_000
@@ -132,6 +133,8 @@ def train():
     sb_bufs = [StrategyBuffer(STRAT_BUF_SIZE),  StrategyBuffer(STRAT_BUF_SIZE)]
     sd_bufs = [StrategyBuffer(STRAT_BUF_SIZE),  StrategyBuffer(STRAT_BUF_SIZE)]
 
+    writer = SummaryWriter(log_dir=os.path.join(SAVE_DIR, "runs"))
+
     print(f"Deep CFR: {N_ITERATIONS} iters | "
           f"{K_TRAVERSALS} traversals/iter | "
           f"{N_CORES} cores | "
@@ -167,20 +170,31 @@ def train():
                     if len(vb_bufs[p]) >= BATCH_SIZE:
                         vb_nets[p] = make_betting_net().to(device)
                         vb_opts[p] = optim.Adam(vb_nets[p].parameters(), lr=LR)
-                        train_value_network(vb_nets[p], vb_bufs[p], vb_opts[p],
+                        vb_loss = train_value_network(vb_nets[p], vb_bufs[p], vb_opts[p],
                                             BATCH_SIZE, N_TRAIN_STEPS, device)
                         vb_nets[p].eval()
+                        if vb_loss is not None:
+                            writer.add_scalar(f"loss/value_betting_p{p}", vb_loss, iteration)
 
                     if len(vd_bufs[p]) >= BATCH_SIZE:
                         vd_nets[p] = make_discard_net().to(device)
                         vd_opts[p] = optim.Adam(vd_nets[p].parameters(), lr=LR)
-                        train_value_network(vd_nets[p], vd_bufs[p], vd_opts[p],
+                        vd_loss = train_value_network(vd_nets[p], vd_bufs[p], vd_opts[p],
                                             BATCH_SIZE, N_TRAIN_STEPS, device)
                         vd_nets[p].eval()
+                        if vd_loss is not None:
+                            writer.add_scalar(f"loss/value_discard_p{p}", vd_loss, iteration)
+
+                for p in [0, 1]:
+                    writer.add_scalar(f"buffer/vb_p{p}", len(vb_bufs[p]), iteration)
+                    writer.add_scalar(f"buffer/vd_p{p}", len(vd_bufs[p]), iteration)
+                    writer.add_scalar(f"buffer/sb_p{p}", len(sb_bufs[p]), iteration)
+                    writer.add_scalar(f"buffer/sd_p{p}", len(sd_bufs[p]), iteration)
 
                 elapsed = time.time() - t0
                 rate    = iteration / elapsed
                 eta     = (N_ITERATIONS - iteration) / rate
+                writer.add_scalar("speed/it_per_s", rate, iteration)
                 print(f"iter {iteration:6d} | "
                       f"vb=({len(vb_bufs[0])},{len(vb_bufs[1])}) "
                       f"vd=({len(vd_bufs[0])},{len(vd_bufs[1])}) | "
