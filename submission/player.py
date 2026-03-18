@@ -33,6 +33,7 @@ class PlayerAgent(Agent):
         self.PRIOR_DISCARD_TEMP = 10.0  # opponent discard prior temperature
         self.THOMPSON_N = 40          # posterior samples
         self.MC_SAMPLES = 60
+        self.UPDATE_RAISE_TEMP = 4
         # ---- Other shit ----
         self.opp_pairs = None    # list of (card1, card2) tuples
         self.opp_weights = None  # np.ndarray, uniform prior
@@ -257,7 +258,7 @@ class PlayerAgent(Agent):
             pool_arr = np.array(pool)
             total = 0.0
             count = 0
-            n_samples = 30
+            n_samples = self.MC_SAMPLES
             for _ in range(n_samples):
                 turn, river = np.random.choice(pool_arr, size=2, replace=False)
                 board = [PokerEnv.int_to_card(c) for c in community + [int(turn), int(river)]]
@@ -280,7 +281,7 @@ class PlayerAgent(Agent):
 
         raise_fraction = (observation["opp_bet"] - observation["my_bet"]) / max(observation["pot_size"], 1)
         opp_win_rate = self.opp_showdown_wins / max(self.opp_showdowns, 1)
-        TEMP = 4.0 * raise_fraction * opp_win_rate
+        TEMP = self.UPDATE_RAISE_TEMP * raise_fraction * opp_win_rate
         active_pairs = [(i, h1, h2) for i, (h1, h2) in enumerate(self.opp_pairs) if self.opp_weights[i] > 0]
         strengths = np.array([
             self._opp_hand_strength(h1, h2, community, observation)
