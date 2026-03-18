@@ -235,7 +235,7 @@ class PlayerAgent(Agent):
             self._equity_vs_pair(h1, h2, my_cards_treys, community, observation)
             for _, h1, h2 in active_pairs
         ])
-        log_weights = TEMP * active_equities
+        log_weights = -TEMP * active_equities
         log_weights -= log_weights.max()
         for k, (i, _, _) in enumerate(active_pairs):
             self.opp_weights[i] *= np.exp(log_weights[k])
