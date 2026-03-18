@@ -25,13 +25,17 @@ from network import get_strategy
 
 # ── bet sizing ────────────────────────────────────────────────────────────────
 
-def compute_bet_sizes(pot, stack, min_raise):
+def compute_bet_sizes(pot, max_raise, min_raise):
     """
-    small = 1/3 pot, large = all-in.
-    Both clamped to [min_raise, stack].
+    Return abstract raise sizes in the same units as gym_env's `raise_amount`.
+
+    small = 1/3 pot raise, large = maximum legal raise.
+    Both are clamped to [min_raise, max_raise].
     """
-    small = int(max(min_raise, min(pot / 3, stack)))
-    large = int(stack)
+    if max_raise < min_raise:
+        return 0, 0
+    small = int(np.clip(pot // 3, min_raise, max_raise))
+    large = int(max_raise)
     return small, large
 
 
@@ -107,8 +111,11 @@ class GameState:
             "my_stack"           : self.stacks[player],
             "opp_stack"          : self.stacks[opp],
             "min_raise"          : self.min_raise,
-            "max_raise"          : max(0, self.stacks[player] - max(0, self.bets[opp] - self.bets[player])),
+            "max_raise"          : self.max_raise_amount(),
         }
+
+    def max_raise_amount(self):
+        return self.STARTING_STACK - max(self.bets)
 
     def legal_betting_mask(self, player):
         """5-dim binary mask of legal betting actions."""
@@ -116,21 +123,17 @@ class GameState:
         call_amount = self.bets[opp] - self.bets[player]
         mask = np.zeros(N_BETTING_ACTIONS, dtype=np.float32)
 
-        # fold: only when facing a bet
-        if call_amount > 0:
-            mask[FOLD] = 1.0
+        # fold is always legal in the environment on betting nodes
+        mask[FOLD] = 1.0
 
-        # check: only when no bet to call
         if call_amount == 0:
             mask[CHECK] = 1.0
-
-        # call: when facing a bet and have chips
-        if call_amount > 0 and self.stacks[player] > 0:
+        else:
             mask[CALL] = 1.0
 
-        # raises: need chips beyond the call
-        if self.stacks[player] > call_amount:
-            small, large = compute_bet_sizes(self.pot, self.stacks[player], self.min_raise)
+        max_raise = self.max_raise_amount()
+        if max_raise >= self.min_raise:
+            small, large = compute_bet_sizes(self.pot, max_raise, self.min_raise)
             if small >= self.min_raise:
                 mask[BET_SMALL] = 1.0
             if large >= self.min_raise:
@@ -143,17 +146,19 @@ class GameState:
         hand = list(self.hole[player])
         kept      = [hand[keep_idx_1], hand[keep_idx_2]]
         discarded = [hand[k] for k in range(5) if k not in (keep_idx_1, keep_idx_2)]
-        self.hole[player]      = kept
-        self.discarded[player] = discarded
+        self.hole[player]         = kept
+        self.discarded[player]    = discarded
         self.discard_done[player] = True
+        self.acting_player        = 1 - player
 
     def apply_bet(self, player, action):
         """
-        Apply a betting action. Returns True if street ends.
+        Apply a betting action. Returns True if the street should advance.
         """
         opp = 1 - player
         call_amount = self.bets[opp] - self.bets[player]
-        small, large = compute_bet_sizes(self.pot, self.stacks[player], self.min_raise)
+        max_raise = self.max_raise_amount()
+        small, large = compute_bet_sizes(self.pot, max_raise, self.min_raise)
 
         if action == FOLD:
             self.terminal = True
@@ -175,16 +180,28 @@ class GameState:
             self.stacks[player] -= actual
             self.bets[player]   += actual
             self.pot            += actual
+
+            # In heads-up preflop, the SB completing the blind does not end the street.
+            if self.street == 0 and player == 0 and self.bets[player] == self.BIG_BLIND:
+                self.acting_player = opp
+                return False
             return True
 
         elif action in (BET_SMALL, BET_LARGE):
-            amount = small if action == BET_SMALL else large
-            amount = min(amount, self.stacks[player])
-            self.stacks[player] -= amount
-            self.bets[player]   += amount
-            self.pot            += amount
-            self.min_raise       = amount
-            self.acting_player   = opp
+            raise_amount = small if action == BET_SMALL else large
+            raise_amount = int(np.clip(raise_amount, self.min_raise, max_raise))
+            new_bet = self.bets[opp] + raise_amount
+            contribution = new_bet - self.bets[player]
+
+            self.stacks[player] -= contribution
+            self.bets[player]    = new_bet
+            self.pot            += contribution
+
+            raise_so_far = self.bets[opp] - self.last_street_bet
+            max_raise = self.STARTING_STACK - max(self.bets)
+            min_raise_no_limit = raise_so_far + raise_amount
+            self.min_raise = min(min_raise_no_limit, max_raise)
+            self.acting_player = opp
             return False
 
         return False
@@ -238,10 +255,10 @@ class GameState:
 # ── traversal ─────────────────────────────────────────────────────────────────
 
 def traverse(state, traverser,
-             value_betting_net, value_discard_net,
-             strategy_betting_net, strategy_discard_net,
+             value_betting_nets, value_discard_nets,
+             strategy_betting_nets, strategy_discard_nets,
              value_betting_buf, value_discard_buf,
-             strategy_betting_buf, strategy_discard_buf,
+             strategy_betting_bufs, strategy_discard_bufs,
              iteration,
              reach_traverser=1.0, reach_opponent=1.0,
              device='cpu'):
@@ -257,16 +274,14 @@ def traverse(state, traverser,
         if not state.discard_done[1]:  # BB discards first
             return _traverse_discard(
                 state, player=1, traverser=traverser,
-                value_discard_net=value_discard_net,
-                strategy_discard_net=strategy_discard_net,
-                value_discard_buf=value_discard_buf,
-                strategy_discard_buf=strategy_discard_buf,
-                value_betting_net=value_betting_net,
-                value_discard_net2=value_discard_net,
-                strategy_betting_net=strategy_betting_net,
-                strategy_discard_net2=strategy_discard_net,
+                value_betting_nets=value_betting_nets,
+                value_discard_nets=value_discard_nets,
+                strategy_betting_nets=strategy_betting_nets,
+                strategy_discard_nets=strategy_discard_nets,
                 value_betting_buf=value_betting_buf,
-                strategy_betting_buf=strategy_betting_buf,
+                value_discard_buf=value_discard_buf,
+                strategy_betting_bufs=strategy_betting_bufs,
+                strategy_discard_bufs=strategy_discard_bufs,
                 iteration=iteration,
                 reach_traverser=reach_traverser,
                 reach_opponent=reach_opponent,
@@ -275,16 +290,14 @@ def traverse(state, traverser,
         if not state.discard_done[0]:  # SB discards second
             return _traverse_discard(
                 state, player=0, traverser=traverser,
-                value_discard_net=value_discard_net,
-                strategy_discard_net=strategy_discard_net,
-                value_discard_buf=value_discard_buf,
-                strategy_discard_buf=strategy_discard_buf,
-                value_betting_net=value_betting_net,
-                value_discard_net2=value_discard_net,
-                strategy_betting_net=strategy_betting_net,
-                strategy_discard_net2=strategy_discard_net,
+                value_betting_nets=value_betting_nets,
+                value_discard_nets=value_discard_nets,
+                strategy_betting_nets=strategy_betting_nets,
+                strategy_discard_nets=strategy_discard_nets,
                 value_betting_buf=value_betting_buf,
-                strategy_betting_buf=strategy_betting_buf,
+                value_discard_buf=value_discard_buf,
+                strategy_betting_bufs=strategy_betting_bufs,
+                strategy_discard_bufs=strategy_discard_bufs,
                 iteration=iteration,
                 reach_traverser=reach_traverser,
                 reach_opponent=reach_opponent,
@@ -302,10 +315,11 @@ def traverse(state, traverser,
     if mask.sum() == 0:
         return state.payoff(traverser)
 
-    vec      = encode_infoset(obs, is_discard_node=False)
-    strategy = get_strategy(value_betting_net, vec, mask, device)
+    vec = encode_infoset(obs, is_discard_node=False)
+    strategy = get_strategy(value_betting_nets[player], vec, mask, device)
 
     is_traverser = (player == traverser)
+    strategy_betting_bufs[player].add(vec, strategy, iteration)
 
     if is_traverser:
         action_values = {}
@@ -318,10 +332,10 @@ def traverse(state, traverser,
                 s2.advance_street()
             action_values[action] = traverse(
                 s2, traverser,
-                value_betting_net, value_discard_net,
-                strategy_betting_net, strategy_discard_net,
+                value_betting_nets, value_discard_nets,
+                strategy_betting_nets, strategy_discard_nets,
                 value_betting_buf, value_discard_buf,
-                strategy_betting_buf, strategy_discard_buf,
+                strategy_betting_bufs, strategy_discard_bufs,
                 iteration,
                 reach_traverser * strategy[action], reach_opponent,
                 device,
@@ -335,36 +349,32 @@ def traverse(state, traverser,
             regrets[action] = reach_opponent * (action_values[action] - node_value)
 
         value_betting_buf.add(vec, regrets, mask)
-        strategy_betting_buf.add(vec, strategy, iteration)
         return node_value
 
-    else:
-        action = int(np.random.choice(N_BETTING_ACTIONS, p=strategy))
-        strategy_betting_buf.add(vec, strategy, iteration)
+    action = int(np.random.choice(N_BETTING_ACTIONS, p=strategy))
 
-        s2           = state.clone()
-        street_ended = s2.apply_bet(player, action)
-        if street_ended and not s2.terminal:
-            s2.advance_street()
+    s2           = state.clone()
+    street_ended = s2.apply_bet(player, action)
+    if street_ended and not s2.terminal:
+        s2.advance_street()
 
-        return traverse(
-            s2, traverser,
-            value_betting_net, value_discard_net,
-            strategy_betting_net, strategy_discard_net,
-            value_betting_buf, value_discard_buf,
-            strategy_betting_buf, strategy_discard_buf,
-            iteration,
-            reach_traverser, reach_opponent * strategy[action],
-            device,
-        )
+    return traverse(
+        s2, traverser,
+        value_betting_nets, value_discard_nets,
+        strategy_betting_nets, strategy_discard_nets,
+        value_betting_buf, value_discard_buf,
+        strategy_betting_bufs, strategy_discard_bufs,
+        iteration,
+        reach_traverser, reach_opponent * strategy[action],
+        device,
+    )
 
 
 def _traverse_discard(state, player, traverser,
-                      value_discard_net, strategy_discard_net,
-                      value_discard_buf, strategy_discard_buf,
-                      value_betting_net, value_discard_net2,
-                      strategy_betting_net, strategy_discard_net2,
-                      value_betting_buf, strategy_betting_buf,
+                      value_betting_nets, value_discard_nets,
+                      strategy_betting_nets, strategy_discard_nets,
+                      value_betting_buf, value_discard_buf,
+                      strategy_betting_bufs, strategy_discard_bufs,
                       iteration,
                       reach_traverser, reach_opponent,
                       device):
@@ -372,9 +382,10 @@ def _traverse_discard(state, player, traverser,
     obs      = state.obs(player)
     mask     = discard_mask()  # all 10 pairs legal
     vec      = encode_infoset(obs, is_discard_node=True)
-    strategy = get_strategy(value_discard_net, vec, mask, device)
+    strategy = get_strategy(value_discard_nets[player], vec, mask, device)
 
     is_traverser = (player == traverser)
+    strategy_discard_bufs[player].add(vec, strategy, iteration)
 
     if is_traverser:
         action_values = {}
@@ -384,10 +395,10 @@ def _traverse_discard(state, player, traverser,
             s2.apply_discard(player, ki, kj)
             action_values[action] = traverse(
                 s2, traverser,
-                value_betting_net, value_discard_net2,
-                strategy_betting_net, strategy_discard_net2,
+                value_betting_nets, value_discard_nets,
+                strategy_betting_nets, strategy_discard_nets,
                 value_betting_buf, value_discard_buf,
-                strategy_betting_buf, strategy_discard_buf,
+                strategy_betting_bufs, strategy_discard_bufs,
                 iteration,
                 reach_traverser * strategy[action], reach_opponent,
                 device,
@@ -401,41 +412,38 @@ def _traverse_discard(state, player, traverser,
             regrets[action] = reach_opponent * (action_values[action] - node_value)
 
         value_discard_buf.add(vec, regrets, mask)
-        strategy_discard_buf.add(vec, strategy, iteration)
         return node_value
 
-    else:
-        action = int(np.random.choice(N_DISCARD_ACTIONS, p=strategy))
-        ki, kj = discard_action_to_keep_pair(action)
-        strategy_discard_buf.add(vec, strategy, iteration)
+    action = int(np.random.choice(N_DISCARD_ACTIONS, p=strategy))
+    ki, kj = discard_action_to_keep_pair(action)
 
-        s2 = state.clone()
-        s2.apply_discard(player, ki, kj)
-        return traverse(
-            s2, traverser,
-            value_betting_net, value_discard_net2,
-            strategy_betting_net, strategy_discard_net2,
-            value_betting_buf, value_discard_buf,
-            strategy_betting_buf, strategy_discard_buf,
-            iteration,
-            reach_traverser, reach_opponent * strategy[action],
-            device,
-        )
+    s2 = state.clone()
+    s2.apply_discard(player, ki, kj)
+    return traverse(
+        s2, traverser,
+        value_betting_nets, value_discard_nets,
+        strategy_betting_nets, strategy_discard_nets,
+        value_betting_buf, value_discard_buf,
+        strategy_betting_bufs, strategy_discard_bufs,
+        iteration,
+        reach_traverser, reach_opponent * strategy[action],
+        device,
+    )
 
 
 def run_traversal(traverser,
-                  value_betting_net, value_discard_net,
-                  strategy_betting_net, strategy_discard_net,
+                  value_betting_nets, value_discard_nets,
+                  strategy_betting_nets, strategy_discard_nets,
                   value_betting_buf, value_discard_buf,
-                  strategy_betting_buf, strategy_discard_buf,
+                  strategy_betting_bufs, strategy_discard_bufs,
                   iteration, device='cpu'):
     """Run one complete traversal for the given traverser."""
     state = GameState()
     return traverse(
         state, traverser,
-        value_betting_net, value_discard_net,
-        strategy_betting_net, strategy_discard_net,
+        value_betting_nets, value_discard_nets,
+        strategy_betting_nets, strategy_discard_nets,
         value_betting_buf, value_discard_buf,
-        strategy_betting_buf, strategy_discard_buf,
+        strategy_betting_bufs, strategy_discard_bufs,
         iteration, device=device,
     )

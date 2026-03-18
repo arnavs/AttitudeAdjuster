@@ -51,8 +51,8 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 def _worker(args):
     """Run one traversal in a subprocess. Returns buffer contents."""
     (traverser, iteration,
-     vb_state, vd_state,
-     sb_state, sd_state) = args
+     vb_states, vd_states,
+     sb_states, sd_states) = args
 
     import sys, os
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -62,24 +62,37 @@ def _worker(args):
                          ReservoirBuffer, StrategyBuffer)
     from traversal import run_traversal
 
-    vb_net = make_betting_net(); vb_net.load_state_dict(vb_state); vb_net.eval()
-    vd_net = make_discard_net(); vd_net.load_state_dict(vd_state); vd_net.eval()
-    sb_net = make_betting_net(); sb_net.load_state_dict(sb_state); sb_net.eval()
-    sd_net = make_discard_net(); sd_net.load_state_dict(sd_state); sd_net.eval()
+    vb_nets = []
+    vd_nets = []
+    sb_nets = []
+    sd_nets = []
+    for p in [0, 1]:
+        vb_net = make_betting_net(); vb_net.load_state_dict(vb_states[p]); vb_net.eval(); vb_nets.append(vb_net)
+        vd_net = make_discard_net(); vd_net.load_state_dict(vd_states[p]); vd_net.eval(); vd_nets.append(vd_net)
+        sb_net = make_betting_net(); sb_net.load_state_dict(sb_states[p]); sb_net.eval(); sb_nets.append(sb_net)
+        sd_net = make_discard_net(); sd_net.load_state_dict(sd_states[p]); sd_net.eval(); sd_nets.append(sd_net)
 
     vb_buf = ReservoirBuffer(10_000)
     vd_buf = ReservoirBuffer(10_000)
-    sb_buf = StrategyBuffer(10_000)
-    sd_buf = StrategyBuffer(10_000)
+    sb_bufs = [StrategyBuffer(10_000), StrategyBuffer(10_000)]
+    sd_bufs = [StrategyBuffer(10_000), StrategyBuffer(10_000)]
 
     run_traversal(
         traverser,
-        vb_net, vd_net, sb_net, sd_net,
-        vb_buf, vd_buf, sb_buf, sd_buf,
+        vb_nets, vd_nets, sb_nets, sd_nets,
+        vb_buf, vd_buf, sb_bufs, sd_bufs,
         iteration,
     )
 
-    return vb_buf.buffer, vd_buf.buffer, sb_buf.buffer, sd_buf.buffer
+    return (
+        traverser,
+        vb_buf.buffer,
+        vd_buf.buffer,
+        sb_bufs[0].buffer,
+        sd_bufs[0].buffer,
+        sb_bufs[1].buffer,
+        sd_bufs[1].buffer,
+    )
 
 
 def _merge(main_buf, new_items):
@@ -129,19 +142,21 @@ def train():
             for traverser in [0, 1]:
                 jobs = [
                     (traverser, iteration,
-                     vb_nets[traverser].state_dict(),
-                     vd_nets[traverser].state_dict(),
-                     sb_nets[traverser].state_dict(),
-                     sd_nets[traverser].state_dict())
+                     [vb_nets[0].state_dict(), vb_nets[1].state_dict()],
+                     [vd_nets[0].state_dict(), vd_nets[1].state_dict()],
+                     [sb_nets[0].state_dict(), sb_nets[1].state_dict()],
+                     [sd_nets[0].state_dict(), sd_nets[1].state_dict()])
                     for _ in range(K_TRAVERSALS)
                 ]
                 results = pool.map(_worker, jobs)
 
-                for vb_items, vd_items, sb_items, sd_items in results:
+                for (_, vb_items, vd_items, sb0_items, sd0_items, sb1_items, sd1_items) in results:
                     _merge(vb_bufs[traverser], vb_items)
                     _merge(vd_bufs[traverser], vd_items)
-                    _merge(sb_bufs[traverser], sb_items)
-                    _merge(sd_bufs[traverser], sd_items)
+                    _merge(sb_bufs[0], sb0_items)
+                    _merge(sd_bufs[0], sd0_items)
+                    _merge(sb_bufs[1], sb1_items)
+                    _merge(sd_bufs[1], sd1_items)
 
             # retrain value networks
             if iteration % TRAIN_EVERY == 0:
