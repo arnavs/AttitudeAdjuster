@@ -218,24 +218,75 @@ class PlayerAgent(Agent):
         self.opp_pairs = list(itertools.combinations(remaining, 2))
         self.opp_weights = np.ones(len(self.opp_pairs), dtype=np.float64)
 
+    def _opp_hand_strength(self, h1, h2, community, observation):
+        """Opponent's equity against random hands from their perspective."""
+        opp_treys = [PokerEnv.int_to_card(h1), PokerEnv.int_to_card(h2)]
+        # Dead cards from opponent's perspective: their pair, both discards, community
+        dead = set(observation["opp_discarded_cards"]) | set(observation["my_discarded_cards"]) | set(community) | {h1, h2}
+        dead.discard(-1)
+        pool = [c for c in range(27) if c not in dead]
+        random_hands = list(itertools.combinations(pool, 2))
+
+        if len(community) == 5:  # river: exact
+            board = [PokerEnv.int_to_card(c) for c in community]
+            opp_rank = self.evaluator.evaluate(opp_treys, board)
+            wins = 0.0
+            for r1, r2 in random_hands:
+                rand_treys = [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)]
+                rand_rank = self.evaluator.evaluate(rand_treys, board)
+                wins += 1.0 if opp_rank < rand_rank else (0.5 if opp_rank == rand_rank else 0.0)
+            return wins / len(random_hands)
+
+        elif len(community) == 4:  # turn: enumerate rivers
+            pool_arr = np.array(pool)
+            total = 0.0
+            count = 0
+            for river in pool_arr:
+                board = [PokerEnv.int_to_card(c) for c in community + [int(river)]]
+                opp_rank = self.evaluator.evaluate(opp_treys, board)
+                for r1, r2 in random_hands:
+                    if r1 == river or r2 == river:
+                        continue
+                    rand_treys = [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)]
+                    rand_rank = self.evaluator.evaluate(rand_treys, board)
+                    total += 1.0 if opp_rank < rand_rank else (0.5 if opp_rank == rand_rank else 0.0)
+                    count += 1
+            return total / count if count > 0 else 0.5
+
+        else:  # flop: MC over (turn, river)
+            pool_arr = np.array(pool)
+            total = 0.0
+            count = 0
+            n_samples = 30
+            for _ in range(n_samples):
+                turn, river = np.random.choice(pool_arr, size=2, replace=False)
+                board = [PokerEnv.int_to_card(c) for c in community + [int(turn), int(river)]]
+                opp_rank = self.evaluator.evaluate(opp_treys, board)
+                for r1, r2 in random_hands:
+                    if r1 == turn or r2 == turn or r1 == river or r2 == river:
+                        continue
+                    rand_treys = [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)]
+                    rand_rank = self.evaluator.evaluate(rand_treys, board)
+                    total += 1.0 if opp_rank < rand_rank else (0.5 if opp_rank == rand_rank else 0.0)
+                    count += 1
+            return total / count if count > 0 else 0.5
+
     def _update_prior_raise(self, observation):
         """Shift posterior toward stronger hands when opponent raises."""
-        street = observation["street"]
         if self.opp_pairs is None:
             return
 
         community = [c for c in observation["community_cards"] if c != -1]
-        my_cards_treys = [PokerEnv.int_to_card(c) for c in observation["my_cards"] if c != -1]
 
         raise_fraction = (observation["opp_bet"] - observation["my_bet"]) / max(observation["pot_size"], 1)
         opp_win_rate = self.opp_showdown_wins / max(self.opp_showdowns, 1)
-        TEMP = 1.0 * raise_fraction * opp_win_rate
+        TEMP = 4.0 * raise_fraction * opp_win_rate
         active_pairs = [(i, h1, h2) for i, (h1, h2) in enumerate(self.opp_pairs) if self.opp_weights[i] > 0]
-        active_equities = np.array([
-            self._equity_vs_pair(h1, h2, my_cards_treys, community, observation)
+        strengths = np.array([
+            self._opp_hand_strength(h1, h2, community, observation)
             for _, h1, h2 in active_pairs
         ])
-        log_weights = -TEMP * active_equities
+        log_weights = TEMP * strengths
         log_weights -= log_weights.max()
         for k, (i, _, _) in enumerate(active_pairs):
             self.opp_weights[i] *= np.exp(log_weights[k])
