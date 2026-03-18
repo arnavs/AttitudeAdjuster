@@ -80,14 +80,14 @@ class PlayerAgent(Agent):
         if total > 0 and np.isfinite(total):
             self.opp_weights /= total
             return
-        self.opp_weights = np.where(np.isfinite(self.opp_weights), self.opp_weights, 0.0)
-        mask = self.opp_weights >= 0
-        self.opp_weights = mask.astype(np.float64)
-        total = float(self.opp_weights.sum())
-        if total == 0:
-            self.opp_weights = np.ones_like(self.opp_weights, dtype=np.float64)
-            total = float(self.opp_weights.sum())
-        self.opp_weights /= total
+        # self.opp_weights = np.where(np.isfinite(self.opp_weights), self.opp_weights, 0.0)
+        # mask = self.opp_weights >= 0
+        # self.opp_weights = mask.astype(np.float64)
+        # total = float(self.opp_weights.sum())
+        # if total == 0:
+        #     self.opp_weights = np.ones_like(self.opp_weights, dtype=np.float64)
+        #     total = float(self.opp_weights.sum())
+        # self.opp_weights /= total
 
     def _dynamic_mc_samples(self, street, close_decision=False):
         base = {0: 0, 1: self.MC_SAMPLES, 2: max(20, self.MC_SAMPLES // 2), 3: 1}.get(street, self.MC_SAMPLES)
@@ -97,8 +97,6 @@ class PlayerAgent(Agent):
 
     def _mc_equity(self, h1, h2, flop, pool, n_samples=100):
         """Estimate win probability of (h1, h2) vs a random opponent pair, with random turn+river from pool."""
-        if len(pool) < 4:
-            return 0.5
         pool = np.array(pool)
         wins = 0.0
         for _ in range(n_samples):
@@ -123,7 +121,7 @@ class PlayerAgent(Agent):
         args = []
         discard_samples = max(18, self.MC_SAMPLES // 2)
         for h1, h2 in self.opp_pairs:
-            excluded = set([h1, h2] + opp_discards + my_discards + my_cards + community)
+            excluded = set([h1, h2] + opp_discards + my_discards + community)
             pool = [c for c in range(27) if c not in excluded]
             args.append((h1, h2, self.flop_cards, pool, discard_samples))
         equities = np.array([self._mc_equity(*a) for a in args])
