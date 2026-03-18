@@ -1,10 +1,12 @@
 import os
 import time
 import itertools
+import multiprocessing
 import numpy as np
 from math import comb
 from agents.agent import Agent
 from gym_env import PokerEnv, WrappedEval
+from submission.workers import _discard_likelihood, _opp_strength_worker
 
 _PREFLOP_TABLE_PATH = os.path.join(os.path.dirname(__file__), "preflop_equity.npy")
 
@@ -36,6 +38,7 @@ class PlayerAgent(Agent):
         self.THOMPSON_N = 32
         self.MC_SAMPLES = 64
         self.UPDATE_RAISE_TEMP = 3.0
+        self.UPDATE_CHECK_TEMP = 1.5
         self.OPP_STRENGTH_HAND_SAMPLES = 30
         self.OPP_STRENGTH_BOARD_SAMPLES = 20
         self.CLOSE_DECISION_BAND = 0.05
@@ -57,6 +60,7 @@ class PlayerAgent(Agent):
         self.opp_pressure_events = 0
         self.opp_postflop_observations = 0
         self.evaluator = WrappedEval()
+        self._pool = multiprocessing.get_context("fork").Pool(4)
 
         if os.path.exists(_PREFLOP_TABLE_PATH):
             self.preflop_table = np.load(_PREFLOP_TABLE_PATH)
@@ -112,23 +116,25 @@ class PlayerAgent(Agent):
         return wins / n_samples
 
     def _update_prior_discard(self, observation):
-        """Update weights by likelihood of opp keeping their hole cards given observed discards."""
+        """Update weights by likelihood of opp keeping their hole cards given observed discards.
+
+        For each candidate pair (h1, h2), the opponent's original hand was
+        (h1, h2, d1, d2, d3). Compute equity for all 10 keep-pairs from that
+        hand, then the likelihood is the softmax probability of choosing (h1, h2).
+        """
         opp_discards = [c for c in observation["opp_discarded_cards"] if c != -1]
         my_discards = [c for c in observation["my_discarded_cards"] if c != -1]
         community = [c for c in observation["community_cards"] if c != -1]
-        my_cards = [c for c in observation["my_cards"] if c != -1]
-
-        args = []
         discard_samples = max(18, self.MC_SAMPLES // 2)
-        for h1, h2 in self.opp_pairs:
-            excluded = set([h1, h2] + opp_discards + my_discards + community)
-            pool = [c for c in range(27) if c not in excluded]
-            args.append((h1, h2, self.flop_cards, pool, discard_samples))
-        equities = np.array([self._mc_equity(*a) for a in args])
 
-        log_weights = self.PRIOR_DISCARD_TEMP * equities
-        log_weights -= log_weights.max()
-        self.opp_weights *= np.exp(log_weights)
+        args = [
+            (h1, h2, opp_discards, my_discards, community,
+             self.flop_cards, observation["blind_position"], discard_samples, self.PRIOR_DISCARD_TEMP)
+            for h1, h2 in self.opp_pairs
+        ]
+        likelihoods = np.array(self._pool.map(_discard_likelihood, args))
+
+        self.opp_weights *= likelihoods
         self._normalize_weights()
 
     def _best_discard(self, observation):
@@ -327,8 +333,7 @@ class PlayerAgent(Agent):
 
     def _opp_hand_strength(self, h1, h2, community, observation):
         """Approximate opponent hand strength against random hands from their perspective."""
-        street = observation["street"]
-        cache_key = ("opp", h1, h2, street)
+        cache_key = ("opp", h1, h2, observation["street"])
         if cache_key in self.opp_strength_cache:
             return self.opp_strength_cache[cache_key]
 
@@ -337,11 +342,9 @@ class PlayerAgent(Agent):
         dead.discard(-1)
         pool = [c for c in range(27) if c not in dead]
         all_hands = list(itertools.combinations(pool, 2))
-        if not all_hands:
-            return 0.5
 
         hand_count = min(len(all_hands), self.OPP_STRENGTH_HAND_SAMPLES)
-        if hand_count == len(all_hands):
+        if hand_count >= len(all_hands):
             sampled_hands = all_hands
         else:
             sampled_idx = np.random.choice(len(all_hands), size=hand_count, replace=False)
@@ -384,12 +387,43 @@ class PlayerAgent(Agent):
         self.opp_strength_cache[cache_key] = result
         return result
 
+    def _compute_active_strengths(self, observation):
+        """Compute opponent hand strengths for all active pairs, using cache + parallel."""
+        community = [c for c in observation["community_cards"] if c != -1]
+        street = observation["street"]
+        opp_discards = [c for c in observation["opp_discarded_cards"] if c != -1]
+        my_discards = [c for c in observation["my_discarded_cards"] if c != -1]
+
+        active_pairs = [(i, h1, h2) for i, (h1, h2) in enumerate(self.opp_pairs) if self.opp_weights[i] > 0]
+
+        cached = {}
+        to_compute = []
+        for idx, (i, h1, h2) in enumerate(active_pairs):
+            cache_key = ("opp", h1, h2, street)
+            if cache_key in self.opp_strength_cache:
+                cached[idx] = self.opp_strength_cache[cache_key]
+            else:
+                to_compute.append((idx, h1, h2))
+
+        if to_compute:
+            args = [
+                (h1, h2, community, opp_discards, my_discards,
+                 self.OPP_STRENGTH_HAND_SAMPLES, self.OPP_STRENGTH_BOARD_SAMPLES)
+                for _, h1, h2 in to_compute
+            ]
+            results = self._pool.map(_opp_strength_worker, args)
+            for (idx, h1, h2), result in zip(to_compute, results):
+                cached[idx] = result
+                self.opp_strength_cache[("opp", h1, h2, street)] = result
+
+        strengths = np.array([cached[idx] for idx in range(len(active_pairs))])
+        return active_pairs, strengths
+
     def _update_prior_raise(self, observation):
         """Shift posterior toward hands the opponent is more likely to raise."""
         if self.opp_pairs is None or self.opp_weights is None:
             return
 
-        community = [c for c in observation["community_cards"] if c != -1]
         raise_fraction = (observation["opp_bet"] - observation["my_bet"]) / max(observation["pot_size"], 1)
         if raise_fraction <= 0:
             return
@@ -399,12 +433,24 @@ class PlayerAgent(Agent):
         temp = self.UPDATE_RAISE_TEMP * raise_fraction * (0.55 + 0.45 * opp_win_rate) * (0.85 + 0.3 * aggression)
         temp = min(temp, 2.2)
 
-        active_pairs = [(i, h1, h2) for i, (h1, h2) in enumerate(self.opp_pairs) if self.opp_weights[i] > 0]
-        strengths = np.array([
-            self._opp_hand_strength(h1, h2, community, observation)
-            for _, h1, h2 in active_pairs
-        ])
+        active_pairs, strengths = self._compute_active_strengths(observation)
         log_weights = temp * strengths
+        log_weights -= log_weights.max()
+        for k, (i, _, _) in enumerate(active_pairs):
+            self.opp_weights[i] *= np.exp(log_weights[k])
+        self._normalize_weights()
+
+    def _update_prior_check(self, observation):
+        """Shift posterior away from strong hands when opponent checks."""
+        if self.opp_pairs is None or self.opp_weights is None:
+            return
+
+        aggression = self._aggression_factor()
+        temp = self.UPDATE_CHECK_TEMP * (0.5 + 0.5 * aggression)
+        temp = min(temp, 1.5)
+
+        active_pairs, strengths = self._compute_active_strengths(observation)
+        log_weights = -temp * strengths
         log_weights -= log_weights.max()
         for k, (i, _, _) in enumerate(active_pairs):
             self.opp_weights[i] *= np.exp(log_weights[k])
@@ -422,10 +468,21 @@ class PlayerAgent(Agent):
             return
 
         if observation["street"] >= 1 and all(c != -1 for c in observation["opp_discarded_cards"]):
+            street = observation["street"]
+            if self.opp_pairs is not None and street not in self.zeroed_streets:
+                community = set(c for c in observation["community_cards"] if c != -1)
+                for i, (h1, h2) in enumerate(self.opp_pairs):
+                    if h1 in community or h2 in community:
+                        self.opp_weights[i] = 0.0
+                self._normalize_weights()
+                self.zeroed_streets.add(street)
+
             self.opp_postflop_observations += 1
             if observation["opp_bet"] > observation["my_bet"]:
                 self.opp_pressure_events += 1
                 self._update_prior_raise(observation)
+            elif observation["opp_bet"] == observation["my_bet"]:
+                self._update_prior_check(observation)
 
     def act(self, observation, reward, terminated, truncated, info):
         hand_number = info.get("hand_number")

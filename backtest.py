@@ -177,6 +177,8 @@ def main():
                     break
 
             (obs0, obs1), reward, terminated, truncated, info = env.step(action)
+            info["hand_number"] = hnum
+            bot.observe(obs0, reward[0], terminated, truncated, info)
 
         if diverged:
             skipped += 1

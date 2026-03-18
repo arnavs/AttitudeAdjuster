@@ -10,10 +10,12 @@ true opponent hand was in the top-k.
 import ast
 import csv
 import itertools
+import multiprocessing
 import sys
 
 import numpy as np
 from gym_env import PokerEnv, WrappedEval
+from submission.player import _discard_likelihood
 
 RANKS = PokerEnv.RANKS
 SUITS = PokerEnv.SUITS
@@ -38,9 +40,10 @@ class PosteriorTracker:
 
     def __init__(self):
         self.evaluator = WrappedEval()
-        self.MC_SAMPLES = 128
+        self.MC_SAMPLES = 64
         self.PRIOR_DISCARD_TEMP = 9.0
         self.UPDATE_RAISE_TEMP = 3.0
+        self.UPDATE_CHECK_TEMP = 1.5
         self.OPP_STRENGTH_HAND_SAMPLES = 30
         self.OPP_STRENGTH_BOARD_SAMPLES = 20
 
@@ -84,18 +87,19 @@ class PosteriorTracker:
                 wins += 0.5
         return wins / n_samples
 
-    def update_prior_discard(self, opp_discards, my_discards, community, flop_cards):
+    def update_prior_discard(self, opp_discards, my_discards, community, flop_cards, blind_position):
         discard_samples = max(18, self.MC_SAMPLES // 2)
-        args = []
-        for h1, h2 in self.opp_pairs:
-            excluded = set([h1, h2] + opp_discards + my_discards + community)
-            pool = [c for c in range(27) if c not in excluded]
-            args.append((h1, h2, flop_cards, pool, discard_samples))
-        equities = np.array([self._mc_equity(*a) for a in args])
+        obs_mini = {"blind_position": blind_position}
+        args = [
+            (h1, h2, opp_discards, my_discards, community,
+             flop_cards, obs_mini, discard_samples, self.PRIOR_DISCARD_TEMP)
+            for h1, h2 in self.opp_pairs
+        ]
+        ctx = multiprocessing.get_context("fork")
+        with ctx.Pool(4) as pool:
+            likelihoods = np.array(pool.map(_discard_likelihood, args))
 
-        log_weights = self.PRIOR_DISCARD_TEMP * equities
-        log_weights -= log_weights.max()
-        self.opp_weights *= np.exp(log_weights)
+        self.opp_weights *= likelihoods
         self._normalize_weights()
 
     def zero_community_overlaps(self, community):
@@ -188,6 +192,22 @@ class PosteriorTracker:
             self.opp_weights[i] *= np.exp(log_weights[k])
         self._normalize_weights()
 
+    def update_prior_check(self, community, opp_discards, my_discards):
+        aggression = self._aggression_factor()
+        temp = self.UPDATE_CHECK_TEMP * (0.5 + 0.5 * aggression)
+        temp = min(temp, 1.5)
+
+        active_pairs = [(i, h1, h2) for i, (h1, h2) in enumerate(self.opp_pairs) if self.opp_weights[i] > 0]
+        strengths = np.array([
+            self._opp_hand_strength(h1, h2, community, opp_discards, my_discards)
+            for _, h1, h2 in active_pairs
+        ])
+        log_weights = -temp * strengths
+        log_weights -= log_weights.max()
+        for k, (i, _, _) in enumerate(active_pairs):
+            self.opp_weights[i] *= np.exp(log_weights[k])
+        self._normalize_weights()
+
     def update_showdown(self, reward):
         self.opp_showdowns += 1
         if reward < 0:
@@ -251,6 +271,7 @@ def process_hand(tracker, rows, verbose=False):
     t0_bet = int(first_row["team_0_bet"])
     t1_bet = int(first_row["team_1_bet"])
 
+    blind_position = 0 if t0_bet <= t1_bet else 1
     prior_initialized = False
     flop_cards = None
     my_cards = my_cards_full[:]
@@ -301,7 +322,7 @@ def process_hand(tracker, rows, verbose=False):
             if verbose:
                 print(f"  Prior initialized: {len(tracker.opp_pairs)} pairs")
 
-            tracker.update_prior_discard(opp_discards, my_discards, community, flop_cards)
+            tracker.update_prior_discard(opp_discards, my_discards, community, flop_cards, blind_position)
 
             if verbose:
                 true_pair = tuple(sorted(kept))
@@ -336,6 +357,15 @@ def process_hand(tracker, rows, verbose=False):
                     rank = tracker.rank_of(true_pair)
                     ent = tracker.entropy()
                     print(f"  Opp RAISE (street {street}, frac={raise_fraction:.2f}): entropy={ent:.2f}, rank={rank}")
+
+            elif action_type == "CHECK" and t1_bet == t0_bet:
+                tracker.update_prior_check(community, opp_discards, my_discards)
+
+                if verbose:
+                    true_pair = tuple(sorted(kept))
+                    rank = tracker.rank_of(true_pair)
+                    ent = tracker.entropy()
+                    print(f"  Opp CHECK (street {street}): entropy={ent:.2f}, rank={rank}")
 
     # Determine reward from final bets
     last_row = rows[-1]
