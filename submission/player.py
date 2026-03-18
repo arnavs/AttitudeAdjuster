@@ -31,8 +31,6 @@ class PlayerAgent(Agent):
         self.TIME_BUDGET = 3.5        # seconds per hand
         self.DISCARD_TEMP = 50.0      # softmax temperature for discard
         self.PRIOR_DISCARD_TEMP = 10.0  # opponent discard prior temperature
-        self.FLOP_GATE_CALL = 3       # skip flop prior update if call <= this
-        self.FLOP_GATE_BET = 6        # skip flop prior update if opp_bet <= this
         self.THOMPSON_N = 40          # posterior samples
         self.MC_SAMPLES = 60
         # ---- Other shit ----
@@ -157,6 +155,15 @@ class PlayerAgent(Agent):
                 self.equity_cache[cache_key] = result
                 return result
 
+    def _noisy_raise(self, frac, min_raise, max_raise):
+        """Noisy raise sizing: target based on frac, asymmetric noise (more below than above)."""
+        target = min_raise + frac * (max_raise - min_raise)
+        spread = max_raise - min_raise
+        lo = max(min_raise, target - 0.5 * spread)
+        hi = min(max_raise, target + 0.1 * spread)
+        raise_amount = int(np.random.uniform(lo, hi))
+        return max(min_raise, min(raise_amount, max_raise))
+
     def _thompson_action(self, observation, hands_remaining):
         """Sample N pairs from posterior, compute equity for each, act based on equity."""
         N = self.THOMPSON_N
@@ -181,8 +188,7 @@ class PlayerAgent(Agent):
             bet_threshold = self.BET_THRESH + adjustment
             if win_rate > bet_threshold and valid_actions[self.action_types.RAISE.value]:
                 frac = (win_rate - bet_threshold) / (1.0 - bet_threshold)
-                raise_amount = int(min_raise + frac * (max_raise - min_raise))
-                raise_amount = max(min_raise, min(raise_amount, max_raise))
+                raise_amount = self._noisy_raise(frac, min_raise, max_raise)
                 return self.action_types.RAISE.value, raise_amount, 0, 0
             return self.action_types.CHECK.value, 0, 0, 0
 
@@ -190,8 +196,7 @@ class PlayerAgent(Agent):
         raise_threshold = self.RAISE_THRESH + adjustment
         if win_rate > raise_threshold and valid_actions[self.action_types.RAISE.value]:
             frac = (win_rate - raise_threshold) / (1.0 - raise_threshold)
-            raise_amount = int(min_raise + frac * (max_raise - min_raise))
-            raise_amount = max(min_raise, min(raise_amount, max_raise))
+            raise_amount = self._noisy_raise(frac, min_raise, max_raise)
             return self.action_types.RAISE.value, raise_amount, 0, 0
 
         call_margin = self.CALL_MARGIN + adjustment
@@ -216,8 +221,6 @@ class PlayerAgent(Agent):
     def _update_prior_raise(self, observation):
         """Shift posterior toward stronger hands when opponent raises."""
         street = observation["street"]
-        if street not in (1, 2, 3):
-            return
         if self.opp_pairs is None:
             return
 
@@ -247,10 +250,7 @@ class PlayerAgent(Agent):
                     self.opp_showdown_wins += 1
         else:
             if observation["opp_bet"] > observation["my_bet"]:
-                call_amount = observation["opp_bet"] - observation["my_bet"]
-                skip_flop = observation["street"] == 1 and call_amount <= self.FLOP_GATE_CALL and observation["opp_bet"] <= self.FLOP_GATE_BET
-                if not skip_flop:
-                    self._update_prior_raise(observation)
+                self._update_prior_raise(observation)
 
     def act(self, observation, reward, terminated, truncated, info):
 
