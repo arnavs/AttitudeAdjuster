@@ -73,6 +73,7 @@ class PlayerAgent(Agent):
         self.opp_pairs      = None
         self.opp_weights    = None
         self.zeroed_streets = set()
+        self.last_opp_action = None
 
     def __name__(self):
         return "PlayerAgent"
@@ -89,9 +90,11 @@ class PlayerAgent(Agent):
             return
 
         street = observation["street"]
-        if street >= 1:
+        opp_last_action = observation.get("opp_last_action", "None")
+        if street >= 1 and opp_last_action != "None" and opp_last_action != self.last_opp_action:
             self.opp_postflop_actions += 1
-            self._update_posterior(observation)
+            self._update_posterior(observation, opp_last_action)
+            self.last_opp_action = opp_last_action
 
     # ── act ───────────────────────────────────────────────────────────────────
 
@@ -106,6 +109,7 @@ class PlayerAgent(Agent):
             self.opp_pairs      = None
             self.opp_weights    = None
             self.zeroed_streets = set()
+            self.last_opp_action = None
 
         # layer 1: foldout heuristic
         if self.cumulative_chips > FOLDOUT_RATIO * hands_remaining:
@@ -183,7 +187,7 @@ class PlayerAgent(Agent):
         self.opp_weights = np.ones(len(self.opp_pairs), dtype=np.float64)
         self._normalize()
 
-    def _update_posterior(self, observation):
+    def _update_posterior(self, observation, opp_last_action):
         if self.opp_pairs is None:
             return
 
@@ -196,11 +200,9 @@ class PlayerAgent(Agent):
             self._normalize()
             self.zeroed_streets.add(street)
 
-        opp_bet = observation["opp_bet"]
-        my_bet  = observation["my_bet"]
-        if opp_bet > my_bet:
+        if opp_last_action == "RAISE":
             self._update_raise(observation)
-        elif opp_bet == my_bet:
+        elif opp_last_action in ("CHECK", "CALL"):
             self._update_check(observation)
 
     def _update_raise(self, observation):

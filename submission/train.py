@@ -128,8 +128,6 @@ def train():
     vb_opts = [optim.Adam(n.parameters(), lr=LR) for n in vb_nets]
     vd_opts = [optim.Adam(n.parameters(), lr=LR) for n in vd_nets]
 
-    vb_bufs = [ReservoirBuffer(VALUE_BUF_SIZE), ReservoirBuffer(VALUE_BUF_SIZE)]
-    vd_bufs = [ReservoirBuffer(VALUE_BUF_SIZE), ReservoirBuffer(VALUE_BUF_SIZE)]
     sb_bufs = [StrategyBuffer(STRAT_BUF_SIZE),  StrategyBuffer(STRAT_BUF_SIZE)]
     sd_bufs = [StrategyBuffer(STRAT_BUF_SIZE),  StrategyBuffer(STRAT_BUF_SIZE)]
 
@@ -144,6 +142,8 @@ def train():
 
     with Pool(processes=N_CORES) as pool:
         for iteration in range(1, N_ITERATIONS + 1):
+            iter_vb_bufs = [ReservoirBuffer(VALUE_BUF_SIZE), ReservoirBuffer(VALUE_BUF_SIZE)]
+            iter_vd_bufs = [ReservoirBuffer(VALUE_BUF_SIZE), ReservoirBuffer(VALUE_BUF_SIZE)]
 
             for traverser in [0, 1]:
                 jobs = [
@@ -157,37 +157,42 @@ def train():
                 results = pool.map(_worker, jobs)
 
                 for (_, vb_items, vd_items, sb0_items, sd0_items, sb1_items, sd1_items) in results:
-                    _merge(vb_bufs[traverser], vb_items)
-                    _merge(vd_bufs[traverser], vd_items)
+                    _merge(iter_vb_bufs[traverser], vb_items)
+                    _merge(iter_vd_bufs[traverser], vd_items)
                     _merge(sb_bufs[0], sb0_items)
                     _merge(sd_bufs[0], sd0_items)
                     _merge(sb_bufs[1], sb1_items)
                     _merge(sd_bufs[1], sd1_items)
 
-            # retrain value networks
+            for p in [0, 1]:
+                if len(iter_vb_bufs[p]) >= BATCH_SIZE:
+                    vb_nets[p] = make_betting_net().to(device)
+                    vb_opts[p] = optim.Adam(vb_nets[p].parameters(), lr=LR)
+                    vb_loss = train_value_network(
+                        vb_nets[p], iter_vb_bufs[p], vb_opts[p],
+                        BATCH_SIZE, N_TRAIN_STEPS, device,
+                    )
+                    vb_nets[p].eval()
+                    if vb_loss is not None:
+                        writer.add_scalar(f"loss/value_betting_p{p}", vb_loss, iteration)
+
+                if len(iter_vd_bufs[p]) >= BATCH_SIZE:
+                    vd_nets[p] = make_discard_net().to(device)
+                    vd_opts[p] = optim.Adam(vd_nets[p].parameters(), lr=LR)
+                    vd_loss = train_value_network(
+                        vd_nets[p], iter_vd_bufs[p], vd_opts[p],
+                        BATCH_SIZE, N_TRAIN_STEPS, device,
+                    )
+                    vd_nets[p].eval()
+                    if vd_loss is not None:
+                        writer.add_scalar(f"loss/value_discard_p{p}", vd_loss, iteration)
+
+            # log periodic progress
             if iteration % TRAIN_EVERY == 0:
-                for p in [0, 1]:
-                    if len(vb_bufs[p]) >= BATCH_SIZE:
-                        vb_nets[p] = make_betting_net().to(device)
-                        vb_opts[p] = optim.Adam(vb_nets[p].parameters(), lr=LR)
-                        vb_loss = train_value_network(vb_nets[p], vb_bufs[p], vb_opts[p],
-                                            BATCH_SIZE, N_TRAIN_STEPS, device)
-                        vb_nets[p].eval()
-                        if vb_loss is not None:
-                            writer.add_scalar(f"loss/value_betting_p{p}", vb_loss, iteration)
-
-                    if len(vd_bufs[p]) >= BATCH_SIZE:
-                        vd_nets[p] = make_discard_net().to(device)
-                        vd_opts[p] = optim.Adam(vd_nets[p].parameters(), lr=LR)
-                        vd_loss = train_value_network(vd_nets[p], vd_bufs[p], vd_opts[p],
-                                            BATCH_SIZE, N_TRAIN_STEPS, device)
-                        vd_nets[p].eval()
-                        if vd_loss is not None:
-                            writer.add_scalar(f"loss/value_discard_p{p}", vd_loss, iteration)
 
                 for p in [0, 1]:
-                    writer.add_scalar(f"buffer/vb_p{p}", len(vb_bufs[p]), iteration)
-                    writer.add_scalar(f"buffer/vd_p{p}", len(vd_bufs[p]), iteration)
+                    writer.add_scalar(f"buffer/vb_p{p}", len(iter_vb_bufs[p]), iteration)
+                    writer.add_scalar(f"buffer/vd_p{p}", len(iter_vd_bufs[p]), iteration)
                     writer.add_scalar(f"buffer/sb_p{p}", len(sb_bufs[p]), iteration)
                     writer.add_scalar(f"buffer/sd_p{p}", len(sd_bufs[p]), iteration)
 
@@ -196,8 +201,8 @@ def train():
                 eta     = (N_ITERATIONS - iteration) / rate
                 writer.add_scalar("speed/it_per_s", rate, iteration)
                 print(f"iter {iteration:6d} | "
-                      f"vb=({len(vb_bufs[0])},{len(vb_bufs[1])}) "
-                      f"vd=({len(vd_bufs[0])},{len(vd_bufs[1])}) | "
+                      f"vb=({len(iter_vb_bufs[0])},{len(iter_vb_bufs[1])}) "
+                      f"vd=({len(iter_vd_bufs[0])},{len(iter_vd_bufs[1])}) | "
                       f"{rate:.1f} it/s | ETA {eta/3600:.1f}h")
 
             if iteration % SAVE_EVERY == 0:

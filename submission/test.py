@@ -8,6 +8,7 @@ import logging
 from gym_env import PokerEnv, WrappedEval
 from submission.traversal import GameState, compute_bet_sizes
 from submission.encoder import FOLD, CHECK, CALL, BET_SMALL, BET_LARGE
+from submission.network import StrategyBuffer
 
 
 def assert_state_matches_env(state, env, label):
@@ -49,6 +50,10 @@ env = make_test_env(cards)
 
 assert_state_matches_env(state, env, "initial")
 print(f"PASS: initial state bets={state.bets} pot={state.pot} acting={state.acting_player}")
+
+mask = state.legal_betting_mask(state.acting_player)
+assert mask[FOLD] == 1.0
+print("PASS: fold remains legal in GameState betting mask")
 
 # cards valid and disjoint
 assert len(state.hole[0]) == 5
@@ -127,5 +132,11 @@ print(f"PASS: BET_SMALL maps to raise_amount semantics, bets={state.bets}, min_r
 ended = state.apply_bet(0, FOLD)
 assert ended and state.terminal and state.winner == 1
 print("PASS: fold after raise terminates correctly")
+
+buf = StrategyBuffer(4)
+buf.add(np.zeros(3, dtype=np.float32), np.array([0.25, 0.75], dtype=np.float32), 7.5)
+_, _, weights = buf.sample(1)
+assert float(weights[0]) == 7.5
+print("PASS: strategy buffer stores weighted average-strategy samples")
 
 print("\nAll submission GameState regression tests passed.")

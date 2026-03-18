@@ -128,9 +128,9 @@ class StrategyBuffer:
         self.buffer   = []
         self.n_seen   = 0
 
-    def add(self, infoset_vec, strategy, iteration):
+    def add(self, infoset_vec, strategy, weight):
         self.n_seen += 1
-        item = (infoset_vec.copy(), strategy.copy(), float(iteration))
+        item = (infoset_vec.copy(), strategy.copy(), float(weight))
         if len(self.buffer) < self.capacity:
             self.buffer.append(item)
         else:
