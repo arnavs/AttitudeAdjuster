@@ -31,16 +31,17 @@ class PlayerAgent(Agent):
         self.FOLDOUT_RATIO = 1.55
         self.SB_BOOST = 1.05
         self.TIME_BUDGET = 2.85
-        self.DISCARD_TEMP = 42.0
         self.PRIOR_DISCARD_TEMP = 9.0
-        self.THOMPSON_N = 32
+        self.THOMPSON_N = 48
         self.MC_SAMPLES = 64
         self.UPDATE_RAISE_TEMP = 3.0
         self.OPP_STRENGTH_HAND_SAMPLES = 30
         self.OPP_STRENGTH_BOARD_SAMPLES = 20
         self.CLOSE_DECISION_BAND = 0.05
-        self.PROBE_BET_FREQ = 0.12
-        self.PROBE_RAISE_FREQ = 0.08
+        self.PROBE_BET_FREQ = 0.06
+        self.PROBE_RAISE_FREQ = 0.04
+        self.POSTERIOR_EXACT_CAP = 128
+        self.VALUE_MASS_THRESH = 0.72
 
         self.opp_pairs = None
         self.opp_weights = None
@@ -76,18 +77,14 @@ class PlayerAgent(Agent):
     def _normalize_weights(self):
         if self.opp_weights is None:
             return
+        self.opp_weights = np.where(np.isfinite(self.opp_weights), self.opp_weights, 0.0)
+        self.opp_weights = np.maximum(self.opp_weights, 0.0)
         total = float(self.opp_weights.sum())
         if total > 0 and np.isfinite(total):
             self.opp_weights /= total
             return
-        # self.opp_weights = np.where(np.isfinite(self.opp_weights), self.opp_weights, 0.0)
-        # mask = self.opp_weights >= 0
-        # self.opp_weights = mask.astype(np.float64)
-        # total = float(self.opp_weights.sum())
-        # if total == 0:
-        #     self.opp_weights = np.ones_like(self.opp_weights, dtype=np.float64)
-        #     total = float(self.opp_weights.sum())
-        # self.opp_weights /= total
+        self.opp_weights = np.ones_like(self.opp_weights, dtype=np.float64)
+        self.opp_weights /= float(self.opp_weights.sum())
 
     def _dynamic_mc_samples(self, street, close_decision=False):
         base = {0: 0, 1: self.MC_SAMPLES, 2: max(20, self.MC_SAMPLES // 2), 3: 1}.get(street, self.MC_SAMPLES)
@@ -116,8 +113,6 @@ class PlayerAgent(Agent):
         opp_discards = [c for c in observation["opp_discarded_cards"] if c != -1]
         my_discards = [c for c in observation["my_discarded_cards"] if c != -1]
         community = [c for c in observation["community_cards"] if c != -1]
-        my_cards = [c for c in observation["my_cards"] if c != -1]
-
         args = []
         discard_samples = max(18, self.MC_SAMPLES // 2)
         for h1, h2 in self.opp_pairs:
@@ -146,12 +141,8 @@ class PlayerAgent(Agent):
             pool = [c for c in range(27) if c not in excluded]
             equities.append(self._mc_equity(h1, h2, flop, pool, n_samples=discard_samples))
         equities = np.array(equities)
-        log_w = self.DISCARD_TEMP * equities
-        log_w -= log_w.max()
-        probs = np.exp(log_w)
-        probs /= probs.sum()
-        chosen = np.random.choice(len(keep_pairs), p=probs)
-        return keep_pairs[chosen]
+        best_idx = int(np.argmax(equities))
+        return keep_pairs[best_idx]
 
     def _equity_vs_pair(self, h1, h2, my_cards_treys, community, observation):
         """Equity of our hand vs a single opp pair. Exact on river/turn, MC on flop."""
@@ -232,9 +223,9 @@ class PlayerAgent(Agent):
                 adjustment = max(adjustment, 0.08)
         return adjustment
 
-    def _estimate_win_rate(self, observation, my_cards_treys, community, close_decision=False):
+    def _estimate_posterior_equity(self, observation, my_cards_treys, community, close_decision=False):
         if self.opp_pairs is None or self.opp_weights is None:
-            return 0.5
+            return 0.5, 0.0, 0.0
         street = observation["street"]
         base_n = {1: self.THOMPSON_N, 2: self.THOMPSON_N + 8, 3: self.THOMPSON_N + 16}.get(street, self.THOMPSON_N)
         if close_decision:
@@ -243,11 +234,27 @@ class PlayerAgent(Agent):
             base_n = max(10, base_n // 2)
 
         probs = self.opp_weights / self.opp_weights.sum()
-        indices = np.random.choice(len(self.opp_pairs), size=base_n, p=probs)
-        return float(np.mean([
+        active_idx = np.flatnonzero(probs > 0)
+        if len(active_idx) == 0:
+            return 0.5, 0.0, 0.0
+
+        if len(active_idx) <= self.POSTERIOR_EXACT_CAP:
+            indices = active_idx
+            sample_weights = probs[indices]
+        else:
+            sample_n = min(base_n, len(active_idx))
+            indices = np.random.choice(active_idx, size=sample_n, replace=False, p=probs[active_idx] / probs[active_idx].sum())
+            sample_weights = probs[indices]
+
+        sample_weights = sample_weights / sample_weights.sum()
+        equities = np.array([
             self._equity_vs_pair(*self.opp_pairs[i], my_cards_treys, community, observation)
             for i in indices
-        ]))
+        ], dtype=np.float64)
+        mean = float(np.dot(sample_weights, equities))
+        variance = float(np.dot(sample_weights, (equities - mean) ** 2))
+        value_mass = float(sample_weights[equities >= self.VALUE_MASS_THRESH].sum())
+        return mean, variance ** 0.5, value_mass
 
     def _thompson_action(self, observation, hands_remaining):
         """Posterior-sampled action with adaptive defend/probe logic."""
@@ -258,7 +265,7 @@ class PlayerAgent(Agent):
         community = [c for c in observation["community_cards"] if c != -1]
         street = observation["street"]
 
-        win_rate = self._estimate_win_rate(observation, my_cards_treys, community)
+        win_rate, equity_std, value_mass = self._estimate_posterior_equity(observation, my_cards_treys, community)
         call_amount = observation["opp_bet"] - observation["my_bet"]
         pot_odds = call_amount / (observation["pot_size"] + call_amount) if call_amount > 0 else 0.0
         adjustment = self._risk_adjustment(hands_remaining)
@@ -267,19 +274,25 @@ class PlayerAgent(Agent):
         if valid_actions[self.action_types.CHECK.value]:
             bet_threshold = self.BET_THRESH + adjustment
             if abs(win_rate - bet_threshold) < self.CLOSE_DECISION_BAND and self._elapsed_hand_time() < self.TIME_BUDGET * 0.65:
-                win_rate = self._estimate_win_rate(observation, my_cards_treys, community, close_decision=True)
+                win_rate, equity_std, value_mass = self._estimate_posterior_equity(
+                    observation, my_cards_treys, community, close_decision=True
+                )
 
-            if win_rate > bet_threshold and valid_actions[self.action_types.RAISE.value]:
-                frac = (win_rate - bet_threshold) / max(1e-6, 1.0 - bet_threshold)
+            bet_edge = win_rate - bet_threshold
+            can_value_bet = bet_edge > 0 and (bet_edge >= 0.035 or value_mass >= 0.2)
+            if can_value_bet and valid_actions[self.action_types.RAISE.value]:
+                frac = (bet_edge + 0.35 * value_mass) / max(1e-6, 1.0 - bet_threshold)
                 raise_amount = self._noisy_raise(frac, min_raise, max_raise, aggressive=street >= 2)
                 return self.action_types.RAISE.value, raise_amount, 0, 0
 
-            probe_low = max(0.38, bet_threshold - 0.14)
-            probe_freq = self.PROBE_BET_FREQ + 0.08 * max(0.0, 0.5 - aggression)
+            probe_low = max(0.42, bet_threshold - 0.08)
+            probe_freq = self.PROBE_BET_FREQ + 0.04 * max(0.0, 0.45 - aggression)
             if (
-                street < 3
+                street == 1
                 and valid_actions[self.action_types.RAISE.value]
                 and probe_low <= win_rate < bet_threshold
+                and equity_std < 0.16
+                and value_mass >= 0.08
                 and np.random.random() < probe_freq
             ):
                 raise_amount = self._noisy_raise(0.12, min_raise, max_raise, aggressive=False)
@@ -291,19 +304,28 @@ class PlayerAgent(Agent):
         call_threshold = pot_odds + call_margin
 
         if min(abs(win_rate - raise_threshold), abs(win_rate - call_threshold)) < self.CLOSE_DECISION_BAND and self._elapsed_hand_time() < self.TIME_BUDGET * 0.65:
-            win_rate = self._estimate_win_rate(observation, my_cards_treys, community, close_decision=True)
+            win_rate, equity_std, value_mass = self._estimate_posterior_equity(
+                observation, my_cards_treys, community, close_decision=True
+            )
 
-        if win_rate > raise_threshold and valid_actions[self.action_types.RAISE.value]:
-            frac = (win_rate - raise_threshold) / max(1e-6, 1.0 - raise_threshold)
+        raise_edge = win_rate - raise_threshold
+        if (
+            raise_edge > 0
+            and value_mass >= 0.18
+            and valid_actions[self.action_types.RAISE.value]
+        ):
+            frac = (raise_edge + 0.45 * value_mass) / max(1e-6, 1.0 - raise_threshold)
             raise_amount = self._noisy_raise(frac, min_raise, max_raise, aggressive=True)
             return self.action_types.RAISE.value, raise_amount, 0, 0
 
         if (
-            street < 3
-            and aggression < 0.45
+            street == 1
+            and aggression < 0.35
             and valid_actions[self.action_types.RAISE.value]
-            and pot_odds < 0.28
-            and 0.43 <= win_rate < call_threshold
+            and pot_odds < 0.2
+            and max(0.47, call_threshold - 0.03) <= win_rate < call_threshold
+            and equity_std < 0.14
+            and value_mass >= 0.05
             and np.random.random() < self.PROBE_RAISE_FREQ
         ):
             raise_amount = self._noisy_raise(0.18, min_raise, max_raise, aggressive=False)
