@@ -48,10 +48,7 @@ def make_discard_net(hidden=256):
 def get_strategy(net, infoset_vec, legal_mask, device='cpu'):
     """
     Run regret matching on network output to get a strategy.
-
-    infoset_vec: numpy array of shape (INPUT_DIM,)
-    legal_mask:  numpy binary array matching net output dim
-    Returns:     numpy probability array of same length as legal_mask
+    Used during training (value/advantage nets).
     """
     with torch.no_grad():
         x = torch.tensor(infoset_vec, dtype=torch.float32,
@@ -64,6 +61,25 @@ def get_strategy(net, infoset_vec, legal_mask, device='cpu'):
     if total > 0:
         return pos / total
     # uniform over legal actions
+    return legal_mask / legal_mask.sum()
+
+
+def get_policy_distribution(net, infoset_vec, legal_mask, device='cpu'):
+    """
+    Masked softmax on strategy network output.
+    Used at runtime (trained strategy nets).
+    """
+    with torch.no_grad():
+        x = torch.tensor(infoset_vec, dtype=torch.float32,
+                         device=device).unsqueeze(0)
+        logits = net(x).squeeze(0).cpu().numpy()
+
+    masked_logits = np.where(legal_mask > 0, logits, -1e9)
+    max_logit = masked_logits[legal_mask > 0].max()
+    probs = np.where(legal_mask > 0, np.exp(masked_logits - max_logit), 0.0)
+    total = probs.sum()
+    if total > 0:
+        return probs / total
     return legal_mask / legal_mask.sum()
 
 

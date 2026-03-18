@@ -24,7 +24,7 @@ from encoder import (
     FOLD, CHECK, CALL, BET_SMALL, BET_LARGE,
     discard_action_to_keep_pair, N_DISCARD_ACTIONS,
 )
-from network import make_betting_net, make_discard_net, get_strategy
+from network import make_betting_net, make_discard_net, get_policy_distribution
 
 _CKPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 
@@ -131,7 +131,7 @@ class PlayerAgent(Agent):
         if mask.sum() == 0:
             return self._safe_action(observation)
 
-        probs = get_strategy(self.bet_nets[position], vec, mask)
+        probs = get_policy_distribution(self.bet_nets[position], vec, mask)
 
         # layer 2: posterior blending on turn/river
         if observation["street"] >= 2 and self.opp_pairs is not None:
@@ -159,7 +159,7 @@ class PlayerAgent(Agent):
         position = observation["blind_position"]
         vec      = encode_infoset(observation, is_discard_node=True)
         mask     = discard_mask()
-        probs    = get_strategy(self.disc_nets[position], vec, mask)
+        probs    = get_policy_distribution(self.disc_nets[position], vec, mask)
         action   = int(np.random.choice(N_DISCARD_ACTIONS, p=probs))
         ki, kj   = discard_action_to_keep_pair(action)
         return self.action_types.DISCARD.value, 0, ki, kj
@@ -243,6 +243,27 @@ class PlayerAgent(Agent):
                 wins += 0.5
         return wins / n
 
+    def _hand_vs_hand_equity(self, hero_cards, vill_cards, community, n=10):
+        """MC equity for a fixed hero hand against a fixed villain hand."""
+        dead = set(community) | set(hero_cards) | set(vill_cards)
+        live = [c for c in range(27) if c not in dead]
+        n_remaining = 5 - len(community)
+        wins = 0.0
+        for _ in range(n):
+            sample = np.random.choice(live, size=n_remaining, replace=False)
+            board5 = community + [int(c) for c in sample]
+            hero = self.evaluator.evaluate(
+                [PokerEnv.int_to_card(c) for c in hero_cards],
+                [PokerEnv.int_to_card(c) for c in board5])
+            vill = self.evaluator.evaluate(
+                [PokerEnv.int_to_card(c) for c in vill_cards],
+                [PokerEnv.int_to_card(c) for c in board5])
+            if hero < vill:
+                wins += 1.0
+            elif hero == vill:
+                wins += 0.5
+        return wins / n
+
     def _normalize(self):
         if self.opp_weights is None:
             return
@@ -279,7 +300,7 @@ class PlayerAgent(Agent):
             w = self.opp_weights[i]
             if w < 1e-4:
                 continue
-            eq = self._fast_equity(h1, h2, community, n=8)
+            eq = self._hand_vs_hand_equity(my_cards, [h1, h2], community, n=8)
             equity  += w * eq
             total_w += w
         if total_w > 0:
