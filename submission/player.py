@@ -33,11 +33,11 @@ class PlayerAgent(Agent):
         self.TIME_BUDGET = 2.85
         self.DISCARD_TEMP = 42.0
         self.PRIOR_DISCARD_TEMP = 9.0
-        self.THOMPSON_N = 24
-        self.MC_SAMPLES = 36
+        self.THOMPSON_N = 32
+        self.MC_SAMPLES = 64
         self.UPDATE_RAISE_TEMP = 3.0
-        self.OPP_STRENGTH_HAND_SAMPLES = 24
-        self.OPP_STRENGTH_BOARD_SAMPLES = 10
+        self.OPP_STRENGTH_HAND_SAMPLES = 30
+        self.OPP_STRENGTH_BOARD_SAMPLES = 20
         self.CLOSE_DECISION_BAND = 0.05
         self.PROBE_BET_FREQ = 0.12
         self.PROBE_RAISE_FREQ = 0.08
@@ -394,10 +394,13 @@ class PlayerAgent(Agent):
         if raise_fraction <= 0:
             return
 
+        street = observation["street"]
+        street_scale = {1: 0.6, 2: 0.85, 3: 1.2}.get(street, 0.8)
+        sizing_signal = raise_fraction ** 0.6
         opp_win_rate = self.opp_showdown_wins / max(self.opp_showdowns, 1)
         aggression = self._aggression_factor()
-        temp = self.UPDATE_RAISE_TEMP * raise_fraction * (0.55 + 0.45 * opp_win_rate) * (0.85 + 0.3 * aggression)
-        temp = min(temp, 2.2)
+        temp = self.UPDATE_RAISE_TEMP * sizing_signal * street_scale * (0.55 + 0.45 * opp_win_rate) * (1.0 - 0.35 * aggression)
+        temp = max(0.1, min(temp, 2.2))
 
         active_pairs = [(i, h1, h2) for i, (h1, h2) in enumerate(self.opp_pairs) if self.opp_weights[i] > 0]
         strengths = np.array([
