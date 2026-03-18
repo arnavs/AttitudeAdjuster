@@ -124,7 +124,8 @@ class GameState:
         mask = np.zeros(N_BETTING_ACTIONS, dtype=np.float32)
 
         # fold is always legal in the environment on betting nodes
-        mask[FOLD] = 1.0
+        if call_amount > 0:
+            mask[FOLD] = 1.0
 
         if call_amount == 0:
             mask[CHECK] = 1.0
@@ -200,7 +201,7 @@ class GameState:
             raise_so_far = self.bets[opp] - self.last_street_bet
             max_raise = self.STARTING_STACK - max(self.bets)
             min_raise_no_limit = raise_so_far + raise_amount
-            self.min_raise = min(min_raise_no_limit, max_raise)
+            self.min_raise = max(self.BIG_BLIND, min(min_raise_no_limit, max_raise))
             self.acting_player = opp
             return False
 
@@ -267,6 +268,17 @@ def traverse(state, traverser,
     Returns counterfactual value for traverser at this node.
     """
     if state.terminal:
+        return state.payoff(traverser)
+
+    # both all-in: run out remaining streets to showdown
+    if state.stacks[0] == 0 and state.stacks[1] == 0:
+        # if discards haven't happened yet, do them randomly
+        if state.street <= 1:
+            for p in [1, 0]:
+                if not state.discard_done[p]:
+                    state.apply_discard(p, 0, 1)
+        while state.street <= 3 and not state.terminal:
+            state.advance_street()
         return state.payoff(traverser)
 
     # ── discard nodes (BB first, then SB) ────────────────────────────────────

@@ -55,7 +55,10 @@ def _worker(args):
      sb_states, sd_states) = args
 
     import sys, os
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    submission_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(submission_dir)
+    sys.path.insert(0, submission_dir)
+    sys.path.insert(0, repo_root)
 
     import torch
     from network import (make_betting_net, make_discard_net,
@@ -203,7 +206,8 @@ def train():
             loss = train_strategy_network(net, buf, opt, BATCH_SIZE, 2000, device)
             path = os.path.join(SAVE_DIR, f"{name}_final.pt")
             torch.save(net.state_dict(), path)
-            print(f"  p{p} {tag} strategy loss={loss:.4f} -> {path}")
+            loss_str = f"{loss:.4f}" if loss is not None else "skipped (buffer too small)"
+            print(f"  p{p} {tag} strategy loss={loss_str} -> {path}")
 
     print("Done.")
 
