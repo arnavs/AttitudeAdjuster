@@ -156,24 +156,35 @@ class PlayerAgent(Agent):
             equities.append(eq)
         return np.array(equities)
 
-    def _bb_keep_pair_values(self, full_hand, community, visible_opp_discs=None, n_samples=20):
-        """BB level-1 discard values: showdown equity vs SB keeping best current pair."""
-        visible_opp_discs = visible_opp_discs or []
-        board_treys = [PokerEnv.int_to_card(c) for c in community]
-        dead = set(full_hand) | set(visible_opp_discs) | set(community)
-        pool = [c for c in range(27) if c not in dead]
+    # FROM BB's PERSPECTIVE
+    def _sb_best_keep(self, sb_hand, community, dead_cards, n=8):
+        """SB picks best keep-pair by MC equity with dead cards excluded."""
+        best_eq, best_i, best_j = -1.0, 0, 1
+        for i, j in itertools.combinations(range(5), 2):
+            eq = self._fast_equity(sb_hand[i], sb_hand[j], community, n=n,
+                                   extra_dead=dead_cards | set(sb_hand))
+            if eq > best_eq:
+                best_eq, best_i, best_j = eq, i, j
+        return best_i, best_j
+
+    def _bb_keep_pair_values(self, full_hand, community, n_samples=20, sb_eq_samples=8):
+        """BB level-1: equity for each keep-pair vs SB choosing by equity."""
         n_remaining = 5 - len(community)
 
         values = []
         for ki, kj in itertools.combinations(range(len(full_hand)), 2):
             k1, k2 = full_hand[ki], full_hand[kj]
+            bb_discards = set(full_hand) - {k1, k2}
+            sb_dead = set(community) | bb_discards
+            pool = [c for c in range(27) if c not in (set(community) | set(full_hand))]
+
             wins, counted = 0.0, 0
             for _ in range(n_samples):
                 if len(pool) < 5 + n_remaining:
                     break
                 sampled = np.random.choice(pool, size=5 + n_remaining, replace=False)
                 sb_hand = [int(c) for c in sampled[:5]]
-                si, sj = self._best_keep_by_rank(sb_hand, board_treys)
+                si, sj = self._sb_best_keep(sb_hand, community, sb_dead, n=sb_eq_samples)
                 r1, r2 = sb_hand[si], sb_hand[sj]
                 remaining_board = [int(c) for c in sampled[5:]]
 
@@ -240,7 +251,7 @@ class PlayerAgent(Agent):
             values = np.array(values, dtype=np.float64)
         else:
             values = self._bb_keep_pair_values(
-                full_hand, community, visible_opp_discs=visible_opp_discs, n_samples=n_samples)
+                full_hand, community, n_samples=n_samples, sb_eq_samples=8)
 
         logits = temp * values
         logits -= logits.max()
