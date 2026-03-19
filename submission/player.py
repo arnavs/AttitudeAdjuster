@@ -157,16 +157,22 @@ class PlayerAgent(Agent):
         return np.array(equities)
 
     def _bb_keep_pair_values(self, full_hand, community, visible_opp_discs=None, n_samples=20):
-        """BB level-1 discard values: showdown equity vs SB keeping best current pair."""
+        """BB level-1 discard values: showdown equity vs SB keeping best current pair.
+
+        BB knows any cards it discards are dead to SB, so for each candidate keep pair we
+        explicitly remove the other three BB cards from SB's sampling pool.
+        """
         visible_opp_discs = visible_opp_discs or []
         board_treys = [PokerEnv.int_to_card(c) for c in community]
-        dead = set(full_hand) | set(visible_opp_discs) | set(community)
-        pool = [c for c in range(27) if c not in dead]
         n_remaining = 5 - len(community)
 
         values = []
         for ki, kj in itertools.combinations(range(len(full_hand)), 2):
             k1, k2 = full_hand[ki], full_hand[kj]
+            my_discards = set(full_hand) - {k1, k2}
+            dead_for_sb = set(community) | set(visible_opp_discs) | {k1, k2} | my_discards
+            pool = [c for c in range(27) if c not in dead_for_sb]
+
             wins, counted = 0.0, 0
             for _ in range(n_samples):
                 if len(pool) < 5 + n_remaining:
