@@ -23,8 +23,10 @@ from gym_env import PokerEnv, WrappedEval
 from encoder import (
     encode_infoset, betting_mask,
     FOLD, CHECK, CALL, BET_SMALL, BET_MED, BET_LARGE,
+    KEEP_PAIRS, N_DISCARD_ACTIONS,
 )
 from network import make_betting_net, get_policy_distribution
+from solve_discard import canonical_hand_flop_with_index
 
 _CKPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 
@@ -142,50 +144,51 @@ class PlayerAgent(Agent):
     def _act_discard(self, observation):
         return self._heuristic_discard(observation)
 
-    def _bb_discard_prob_for_pair(self, h1, h2, opp_discs, community):
+    def _bb_discard_prob(self, h1, h2, opp_discs, community):
         """Probability that BB kept (h1, h2) from [h1, h2] + opp_discs."""
-        from solve_discard import canonical_hand_flop_with_index
+
         bb_full = [h1, h2] + list(opp_discs)
         bb_key, kp_idx = canonical_hand_flop_with_index(tuple(bb_full), tuple(community[:3]))
-        if self.bb_discard_table and bb_key in self.bb_discard_table:
-            return self.bb_discard_table[bb_key][kp_idx]
-        return 0.1
+        return self.bb_discard_table[bb_key][kp_idx]
 
     def _heuristic_discard(self, observation):
-        """BB uses table lookup. SB uses table-weighted equity."""
+        """BB samples from table strategy. SB pure best-responds via table-weighted equity."""
+
+
+
         my_cards  = [c for c in observation["my_cards"] if c != -1]
         community = [c for c in observation["community_cards"] if c != -1]
         opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
         we_are_sb = observation["blind_position"] == 0
-        keep_pairs = list(itertools.combinations(range(len(my_cards)), 2))
 
         if not we_are_sb:
-            # BB: table lookup with correct canonical index mapping
-            best_prob, best_idx = -1.0, 0
-            for idx, (ki, kj) in enumerate(keep_pairs):
-                k1, k2 = my_cards[ki], my_cards[kj]
-                discs = [my_cards[x] for x in range(len(my_cards)) if x != ki and x != kj]
-                prob = self._bb_discard_prob_for_pair(k1, k2, discs, community)
-                if prob > best_prob:
-                    best_prob, best_idx = prob, idx
+            # BB: sample from table strategy
+            probs = np.zeros(N_DISCARD_ACTIONS, dtype=np.float64)
+            for idx, (ki, kj) in enumerate(KEEP_PAIRS):
+                kept = [my_cards[ki], my_cards[kj]]
+                discs = [my_cards[x] for x in range(5) if x != ki and x != kj]
+                full = list(kept) + list(discs)
+                bb_key, kp_idx = canonical_hand_flop_with_index(tuple(full), tuple(community[:3]))
+                probs[idx] = self.bb_discard_table[bb_key][kp_idx]
+            probs /= probs.sum()
+            action = int(np.random.choice(N_DISCARD_ACTIONS, p=probs))
+            best_ki, best_kj = KEEP_PAIRS[action]
         else:
-            # SB level-2: equity weighted by BB's table probabilities
+            # SB: equity weighted by BB's table probabilities
             dead = set(my_cards) | set(opp_discs) | set(community)
             pool = [c for c in range(27) if c not in dead]
             n_remaining = 5 - len(community)
             n_samples = 24
 
             best_eq, best_idx = -1.0, 0
-            for idx, (ki, kj) in enumerate(keep_pairs):
+            for idx, (ki, kj) in enumerate(KEEP_PAIRS):
                 k1, k2 = my_cards[ki], my_cards[kj]
                 weighted_wins, total_weight = 0.0, 0.0
                 for _ in range(n_samples):
-                    if len(pool) < 2 + n_remaining:
-                        break
                     sampled = np.random.choice(pool, size=2 + n_remaining, replace=False)
                     r1, r2 = int(sampled[0]), int(sampled[1])
 
-                    weight = self._bb_discard_prob_for_pair(r1, r2, opp_discs, community)
+                    weight = self._bb_discard_prob(r1, r2, opp_discs, community)
                     if weight < 1e-9:
                         continue
 
@@ -203,8 +206,8 @@ class PlayerAgent(Agent):
                 eq = weighted_wins / max(total_weight, 1e-9)
                 if eq > best_eq:
                     best_eq, best_idx = eq, idx
+            best_ki, best_kj = KEEP_PAIRS[best_idx]
 
-        best_ki, best_kj = keep_pairs[best_idx]
         return self.action_types.DISCARD.value, 0, best_ki, best_kj
 
     # ── posterior ─────────────────────────────────────────────────────────────
@@ -224,18 +227,66 @@ class PlayerAgent(Agent):
         self._update_posterior_discard(observation)
 
     def _update_posterior_discard(self, observation):
-        """Weight by BB's table probability of keeping each candidate pair."""
-        if observation["blind_position"] != 0:
-            return
+        """Weight by opponent's probability of keeping each candidate pair."""
 
         opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
         community = [c for c in observation["community_cards"] if c != -1]
+        we_are_sb = observation["blind_position"] == 0
 
-        for i, (h1, h2) in enumerate(self.opp_pairs):
-            if self.opp_weights[i] < 1e-9:
-                continue
-            prob = self._bb_discard_prob_for_pair(h1, h2, opp_discs, community)
-            self.opp_weights[i] *= prob
+        if we_are_sb:
+            # SB updating on BB's discard: use BB table directly
+            for i, (h1, h2) in enumerate(self.opp_pairs):
+                if self.opp_weights[i] < 1e-9:
+                    continue
+                prob = self._bb_discard_prob(h1, h2, opp_discs, community)
+                self.opp_weights[i] *= prob
+        else:
+            # BB updating on SB's discard: compute SB's best-response softmax
+            my_discs = [c for c in observation["my_discarded_cards"] if c != -1]
+            # SB knows: own hand, community, BB's discards (my_discs). NOT BB's kept cards.
+            sb_dead = set(my_discs) | set(community)
+            pool = [c for c in range(27) if c not in sb_dead | set(opp_discs)]
+            n_remaining = 5 - len(community)
+            n_samples = 12
+            temp = 6.0
+
+            for i, (h1, h2) in enumerate(self.opp_pairs):
+                if self.opp_weights[i] < 1e-9:
+                    continue
+                # reconstruct SB's full hand
+                sb_full = [h1, h2] + opp_discs
+                # compute equity for each keep-pair of this SB hand
+                sb_pool = [c for c in pool if c != h1 and c != h2]
+                values = np.zeros(N_DISCARD_ACTIONS, dtype=np.float64)
+                for idx, (ki, kj) in enumerate(KEEP_PAIRS):
+                    k1, k2 = sb_full[ki], sb_full[kj]
+                    weighted_wins, total_weight = 0.0, 0.0
+                    for _ in range(n_samples):
+                        sampled = np.random.choice(sb_pool, size=2 + n_remaining, replace=False)
+                        r1, r2 = int(sampled[0]), int(sampled[1])
+                        weight = self._bb_discard_prob(r1, r2, my_discs, community)
+                        if weight < 1e-9:
+                            continue
+                        remaining_board = [int(c) for c in sampled[2:]]
+                        board5 = community + remaining_board
+                        board5_treys = [PokerEnv.int_to_card(c) for c in board5]
+                        my_rank = self.evaluator.evaluate(
+                            [PokerEnv.int_to_card(k1), PokerEnv.int_to_card(k2)], board5_treys)
+                        opp_rank = self.evaluator.evaluate(
+                            [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)], board5_treys)
+                        outcome = 1.0 if my_rank < opp_rank else 0.5 if my_rank == opp_rank else 0.0
+                        weighted_wins += weight * outcome
+                        total_weight += weight
+                    values[idx] = weighted_wins / max(total_weight, 1e-9)
+                # softmax to get SB's keep probability distribution
+                logits = temp * values
+                logits -= logits.max()
+                probs = np.exp(logits)
+                probs /= probs.sum()
+                # which keep-pair index corresponds to keeping (h1, h2)?
+                # h1, h2 are at positions 0,1 in sb_full
+                self.opp_weights[i] *= probs[0]
+
         self._normalize()
 
     def _update_posterior(self, observation):

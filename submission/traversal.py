@@ -12,7 +12,6 @@ Discard order:
 """
 
 import copy
-import itertools
 import numpy as np
 from encoder import (
     encode_infoset,
@@ -265,7 +264,7 @@ def traverse(state, traverser,
              strategy_betting_bufs,
              iteration,
              reach_traverser=1.0, reach_opponent=1.0,
-             device='cpu'):
+             device='cpu', bb_table=None):
     """
     External sampling MCCFR traversal.
     Returns counterfactual value for traverser at this node.
@@ -290,7 +289,7 @@ def traverse(state, traverser,
                 iteration=iteration,
                 reach_traverser=reach_traverser,
                 reach_opponent=reach_opponent,
-                device=device,
+                device=device, bb_table=bb_table,
             )
         if not state.discard_done[0]:  # SB discards second
             return _traverse_discard(
@@ -301,7 +300,7 @@ def traverse(state, traverser,
                 iteration=iteration,
                 reach_traverser=reach_traverser,
                 reach_opponent=reach_opponent,
-                device=device,
+                device=device, bb_table=bb_table,
             )
 
     if state.terminal:
@@ -337,7 +336,7 @@ def traverse(state, traverser,
                 strategy_betting_bufs,
                 iteration,
                 reach_traverser * strategy[action], reach_opponent,
-                device,
+                device, bb_table=bb_table,
             )
 
         node_value = sum(strategy[a] * action_values[a]
@@ -364,82 +363,23 @@ def traverse(state, traverser,
         strategy_betting_bufs,
         iteration,
         reach_traverser, reach_opponent * strategy[action],
-        device,
+        device, bb_table=bb_table,
     )
 
 
-def _fast_equity(evaluator, h1, h2, board, dead_cards, n=10):
-    """Quick MC equity for a pair against random opponent, standalone version."""
-    from gym_env import PokerEnv
-    dead = set(board) | {h1, h2} | dead_cards
-    live = [c for c in range(27) if c not in dead]
-    n_remaining = 5 - len(board)
-    wins = 0.0
-    for _ in range(n):
-        sample = np.random.choice(live, size=2 + n_remaining, replace=False)
-        r1, r2 = int(sample[0]), int(sample[1])
-        board5 = list(board) + [int(c) for c in sample[2:]]
-        full_board = [PokerEnv.int_to_card(c) for c in board5]
-        our = evaluator.evaluate(
-            [PokerEnv.int_to_card(h1), PokerEnv.int_to_card(h2)], full_board)
-        opp = evaluator.evaluate(
-            [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)], full_board)
-        if our < opp:
-            wins += 1.0
-        elif our == opp:
-            wins += 0.5
-    return wins / n
+# FROM SB's PERSPECTIVE
+def _bb_discard_prob(bb_table, h1, h2, opp_discs, board):
+    """Look up probability that BB kept (h1, h2) from [h1, h2] + opp_discs."""
+    from solve_discard import canonical_hand_flop_with_index
+    bb_full = [h1, h2] + list(opp_discs)
+    bb_key, kp_idx = canonical_hand_flop_with_index(tuple(bb_full), tuple(board[:3]))
+    return bb_table[bb_key][kp_idx]
 
 
-def _sb_best_keep(evaluator, sb_hand, board, dead_cards, n=8):
-    """SB picks best keep-pair by MC equity with dead cards excluded."""
-    best_eq, best_i, best_j = -1.0, 0, 1
-    for i, j in itertools.combinations(range(5), 2):
-        eq = _fast_equity(evaluator, sb_hand[i], sb_hand[j], board,
-                          dead_cards | set(sb_hand), n=n)
-        if eq > best_eq:
-            best_eq, best_i, best_j = eq, i, j
-    return best_i, best_j
-
-
-def _bb_keep_pair_values(evaluator, full_hand, board, n_samples=20, sb_eq_samples=8):
-    """BB level-1: equity for each keep-pair vs SB choosing by equity."""
-    from gym_env import PokerEnv
-    n_remaining = 5 - len(board)
-    values = []
-    for ki, kj in itertools.combinations(range(5), 2):
-        k1, k2 = full_hand[ki], full_hand[kj]
-        bb_discards = set(full_hand) - {k1, k2}
-        sb_dead = set(board) | bb_discards
-        pool = [c for c in range(27) if c not in (set(board) | set(full_hand))]
-
-        wins, counted = 0.0, 0
-        for _ in range(n_samples):
-            if len(pool) < 5 + n_remaining:
-                break
-            sampled = np.random.choice(pool, size=5 + n_remaining, replace=False)
-            sb_hand = [int(c) for c in sampled[:5]]
-            si, sj = _sb_best_keep(evaluator, sb_hand, board, sb_dead, n=sb_eq_samples)
-            r1, r2 = sb_hand[si], sb_hand[sj]
-            remaining_board = [int(c) for c in sampled[5:]]
-            full_board = [PokerEnv.int_to_card(c) for c in board] + \
-                         [PokerEnv.int_to_card(int(c)) for c in remaining_board]
-            my_rank = evaluator.evaluate(
-                [PokerEnv.int_to_card(k1), PokerEnv.int_to_card(k2)], full_board)
-            opp_rank = evaluator.evaluate(
-                [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)], full_board)
-            if my_rank < opp_rank:
-                wins += 1.0
-            elif my_rank == opp_rank:
-                wins += 0.5
-            counted += 1
-        values.append(wins / max(counted, 1))
-    return np.array(values, dtype=np.float64)
-
-
-def _best_discard_heuristic(state, player, n_samples=20, temp=6.0):
-    """BB level-1 (vs SB choosing by equity), SB level-2 (weighted by BB's policy)."""
+def _best_discard_heuristic(state, player, bb_table, n_samples=20):
+    """BB: sample from table strategy. SB: table-weighted equity."""
     from gym_env import PokerEnv, WrappedEval
+    from solve_discard import canonical_hand_flop_with_index
     evaluator = WrappedEval()
     hand = list(state.hole[player])
     board = state.board()
@@ -451,57 +391,54 @@ def _best_discard_heuristic(state, player, n_samples=20, temp=6.0):
         opp_discs = list(state.discarded[opp])
 
     is_sb = (player == 0)
-    can_infer = is_sb and len(opp_discs) == 3
 
-    if can_infer:
-        # SB level-2: weighted by BB's probability of keeping sampled hand
-        dead = set(board) | set(hand) | set(opp_discs)
-        pool = [c for c in range(27) if c not in dead]
-        bb_policy_cache = {}
-        best_action, best_value = 0, -1.0
+    if not is_sb:
+        # BB: sample from table strategy directly
+        probs = np.zeros(N_DISCARD_ACTIONS, dtype=np.float64)
+        for idx, (ki, kj) in enumerate(KEEP_PAIRS):
+            kept = [hand[ki], hand[kj]]
+            discs = [hand[x] for x in range(5) if x != ki and x != kj]
+            full = list(kept) + list(discs)
+            bb_key, kp_idx = canonical_hand_flop_with_index(tuple(full), tuple(board[:3]))
+            probs[idx] = bb_table[bb_key][kp_idx]
+        probs /= probs.sum()
+        return int(np.random.choice(N_DISCARD_ACTIONS, p=probs))
 
-        for action in range(N_DISCARD_ACTIONS):
-            ki, kj = discard_action_to_keep_pair(action)
-            k1, k2 = hand[ki], hand[kj]
-            weighted_wins, total_weight = 0.0, 0.0
-            for _ in range(n_samples):
-                if len(pool) < 2 + n_remaining:
-                    break
-                sampled = np.random.choice(pool, size=2 + n_remaining, replace=False)
-                r1, r2 = int(sampled[0]), int(sampled[1])
-                bb_full = [r1, r2] + opp_discs
-                bb_key = tuple(bb_full)
-                if bb_key not in bb_policy_cache:
-                    bb_vals = _bb_keep_pair_values(evaluator, bb_full, board, n_samples=8, sb_eq_samples=6)
-                    bb_logits = temp * bb_vals
-                    bb_logits -= bb_logits.max()
-                    bb_probs = np.exp(bb_logits)
-                    bb_probs /= bb_probs.sum()
-                    bb_policy_cache[bb_key] = bb_probs[0]
-                weight = bb_policy_cache[bb_key]
-                if weight < 1e-9:
-                    continue
+    # SB: weighted by BB's table probabilities
+    dead = set(board) | set(hand) | set(opp_discs)
+    pool = [c for c in range(27) if c not in dead]
+    best_action, best_value = 0, -1.0
 
-                remaining_board = [int(c) for c in sampled[2:]]
-                full_board = [PokerEnv.int_to_card(c) for c in board] + \
-                             [PokerEnv.int_to_card(int(c)) for c in remaining_board]
-                my_rank = evaluator.evaluate(
-                    [PokerEnv.int_to_card(k1), PokerEnv.int_to_card(k2)], full_board)
-                opp_rank = evaluator.evaluate(
-                    [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)], full_board)
-                outcome = 1.0 if my_rank < opp_rank else 0.5 if my_rank == opp_rank else 0.0
-                weighted_wins += weight * outcome
-                total_weight += weight
+    for action in range(N_DISCARD_ACTIONS):
+        ki, kj = discard_action_to_keep_pair(action)
+        k1, k2 = hand[ki], hand[kj]
+        weighted_wins, total_weight = 0.0, 0.0
+        for _ in range(n_samples):
+            if len(pool) < 2 + n_remaining:
+                break
+            sampled = np.random.choice(pool, size=2 + n_remaining, replace=False)
+            r1, r2 = int(sampled[0]), int(sampled[1])
 
-            value = weighted_wins / max(total_weight, 1e-9)
-            if value > best_value:
-                best_value = value
-                best_action = action
-        return best_action
-    else:
-        # BB level-1: best equity vs SB's best pair
-        values = _bb_keep_pair_values(evaluator, hand, board, n_samples=n_samples)
-        return int(np.argmax(values))
+            weight = _bb_discard_prob(bb_table, r1, r2, opp_discs, board)
+            if weight < 1e-9:
+                continue
+
+            remaining_board = [int(c) for c in sampled[2:]]
+            full_board = [PokerEnv.int_to_card(c) for c in board] + \
+                         [PokerEnv.int_to_card(int(c)) for c in remaining_board]
+            my_rank = evaluator.evaluate(
+                [PokerEnv.int_to_card(k1), PokerEnv.int_to_card(k2)], full_board)
+            opp_rank = evaluator.evaluate(
+                [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)], full_board)
+            outcome = 1.0 if my_rank < opp_rank else 0.5 if my_rank == opp_rank else 0.0
+            weighted_wins += weight * outcome
+            total_weight += weight
+
+        value = weighted_wins / max(total_weight, 1e-9)
+        if value > best_value:
+            best_value = value
+            best_action = action
+    return best_action
 
 
 def _traverse_discard(state, player, traverser,
@@ -510,9 +447,9 @@ def _traverse_discard(state, player, traverser,
                       strategy_betting_bufs,
                       iteration,
                       reach_traverser, reach_opponent,
-                      device):
-    """Handle a discard decision node using heuristic best-equity discard."""
-    action = _best_discard_heuristic(state, player)
+                      device, bb_table=None):
+    """Handle a discard decision node using table-based discard."""
+    action = _best_discard_heuristic(state, player, bb_table)
     ki, kj = discard_action_to_keep_pair(action)
     s2 = state.clone()
     s2.apply_discard(player, ki, kj)
@@ -523,7 +460,7 @@ def _traverse_discard(state, player, traverser,
         strategy_betting_bufs,
         iteration,
         reach_traverser, reach_opponent,
-        device,
+        device, bb_table=bb_table,
     )
 
 
@@ -531,7 +468,7 @@ def run_traversal(traverser,
                   value_betting_nets,
                   value_betting_buf,
                   strategy_betting_bufs,
-                  iteration, device='cpu'):
+                  iteration, device='cpu', bb_table=None):
     """Run one complete traversal for the given traverser."""
     state = GameState()
     return traverse(
@@ -539,5 +476,5 @@ def run_traversal(traverser,
         value_betting_nets,
         value_betting_buf,
         strategy_betting_bufs,
-        iteration, device=device,
+        iteration, device=device, bb_table=bb_table,
     )

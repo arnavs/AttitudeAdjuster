@@ -52,7 +52,7 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 def _worker(args):
     """Run one traversal in a subprocess. Returns buffer contents."""
-    (traverser, iteration, vb_states) = args
+    (traverser, iteration, vb_states, bb_table) = args
 
     import sys, os
     submission_dir = os.path.dirname(os.path.abspath(__file__))
@@ -75,7 +75,7 @@ def _worker(args):
         traverser,
         vb_nets,
         vb_buf, sb_bufs,
-        iteration,
+        iteration, bb_table=bb_table,
     )
 
     return (
@@ -102,6 +102,13 @@ def _merge(main_buf, new_items):
 
 def train():
     device = 'cpu'
+
+    # load BB discard table
+    import pickle
+    bb_table_path = os.path.join(SAVE_DIR, "bb_discard_table.pkl")
+    with open(bb_table_path, "rb") as f:
+        bb_table = pickle.load(f)
+    print(f"Loaded BB discard table: {len(bb_table):,} entries")
 
     vb_nets = [make_betting_net().to(device), make_betting_net().to(device)]
 
@@ -135,7 +142,8 @@ def train():
             for traverser in [0, 1]:
                 jobs = [
                     (traverser, iteration,
-                     [vb_nets[0].state_dict(), vb_nets[1].state_dict()])
+                     [vb_nets[0].state_dict(), vb_nets[1].state_dict()],
+                     bb_table)
                     for _ in range(K_TRAVERSALS)
                 ]
                 results = pool.map(_worker, jobs)
