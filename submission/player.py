@@ -22,7 +22,7 @@ from gym_env import PokerEnv, WrappedEval
 from encoder import (
     encode_infoset, betting_mask, discard_mask,
     FOLD, CHECK, CALL, BET_SMALL, BET_MED, BET_LARGE,
-    discard_action_to_keep_pair, N_DISCARD_ACTIONS,
+    discard_action_to_keep_pair,
 )
 from network import make_betting_net, make_discard_net, get_policy_distribution
 
@@ -31,7 +31,6 @@ _CKPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoint
 FOLDOUT_RATIO       = 1.55
 POSTERIOR_THRESHOLD = 15.0
 TIME_BUDGET         = 2
-OPP_FOLD_THRESHOLD  = 0.65
 
 
 class PlayerAgent(Agent):
@@ -61,9 +60,6 @@ class PlayerAgent(Agent):
         # match-level state
         self.cumulative_chips     = 0
         self.hands_played         = 0
-        self.opp_postflop_actions = 0
-        self.opp_postflop_folds   = 0
-        self.last_action_was_bet  = False
 
         # hand-level state
         self.current_hand   = None
@@ -81,14 +77,10 @@ class PlayerAgent(Agent):
         self.cumulative_chips += reward
         if terminated:
             self.hands_played += 1
-            # track if opp folded to our bet
-            if reward > 0 and self.last_action_was_bet:
-                self.opp_postflop_folds += 1
             return
 
         street = observation["street"]
         if street >= 1:
-            self.opp_postflop_actions += 1
             self._update_posterior(observation)
 
     # ── act ───────────────────────────────────────────────────────────────────
@@ -115,11 +107,11 @@ class PlayerAgent(Agent):
 
         # discard
         if observation["valid_actions"][self.action_types.DISCARD.value]:
-            self.last_action_was_bet = False
             return self._act_discard(observation)
 
         # init posterior once discards are known
-        self._maybe_init_posterior(observation)
+        if all(c != -1 for c in observation["opp_discarded_cards"]) and self.opp_pairs is None:
+            self._init_posterior(observation)
 
         # get network strategy
         position = observation["blind_position"]
@@ -135,12 +127,6 @@ class PlayerAgent(Agent):
         if observation["street"] >= 2 and self.opp_pairs is not None:
             probs = self._blend_posterior(observation, probs, mask)
 
-        # layer 3: opponent model exploit
-        probs = self._apply_opp_model(probs, mask)
-
-        # layer 4: variance adjustment
-        probs = self._variance_adjust(probs, mask, hands_remaining)
-
         # normalize and sample
         probs = probs * mask
         if probs.sum() == 0:
@@ -148,7 +134,6 @@ class PlayerAgent(Agent):
         probs /= probs.sum()
 
         action = int(np.random.choice(len(probs), p=probs))
-        self.last_action_was_bet = action in (BET_SMALL, BET_MED, BET_LARGE)
         return self._to_gym(action, observation)
 
     # ── discard ───────────────────────────────────────────────────────────────
@@ -158,17 +143,30 @@ class PlayerAgent(Agent):
         vec      = encode_infoset(observation, is_discard_node=True)
         mask     = discard_mask()
         probs    = get_policy_distribution(self.disc_nets[position], vec, mask)
-        action   = int(np.random.choice(N_DISCARD_ACTIONS, p=probs))
+        action   = int(np.argmax(probs))
         ki, kj   = discard_action_to_keep_pair(action)
+        # sanity check: fall back if net's pick has terrible equity
+        my_cards  = [c for c in observation["my_cards"] if c != -1]
+        community = [c for c in observation["community_cards"] if c != -1]
+        if self._fast_equity(my_cards[ki], my_cards[kj], community, n=20) < 0.25:
+            return self._heuristic_discard(observation)
         return self.action_types.DISCARD.value, 0, ki, kj
+
+    def _heuristic_discard(self, observation):
+        """Fallback: keep the pair with highest flop equity."""
+        my_cards  = [c for c in observation["my_cards"] if c != -1]
+        community = [c for c in observation["community_cards"] if c != -1]
+        keep_pairs = list(itertools.combinations(range(len(my_cards)), 2))
+        best_eq, best_ki, best_kj = -1, 0, 1
+        for ki, kj in keep_pairs:
+            eq = self._fast_equity(my_cards[ki], my_cards[kj], community, n=30)
+            if eq > best_eq:
+                best_eq, best_ki, best_kj = eq, ki, kj
+        return self.action_types.DISCARD.value, 0, best_ki, best_kj
 
     # ── posterior ─────────────────────────────────────────────────────────────
 
-    def _maybe_init_posterior(self, observation):
-        opp_known = all(c != -1 for c in observation["opp_discarded_cards"])
-        if not opp_known or self.opp_pairs is not None:
-            return
-
+    def _init_posterior(self, observation):
         my_cards  = set(c for c in observation["my_cards"] if c != -1)
         my_discs  = set(c for c in observation["my_discarded_cards"] if c != -1)
         opp_discs = set(c for c in observation["opp_discarded_cards"] if c != -1)
@@ -179,6 +177,39 @@ class PlayerAgent(Agent):
 
         self.opp_pairs   = list(itertools.combinations(remaining, 2))
         self.opp_weights = np.ones(len(self.opp_pairs), dtype=np.float64)
+        self._normalize()
+        self._update_posterior_discard(observation)
+
+    def _update_posterior_discard(self, observation):
+        """Weight by relative discard likelihood: Pr[keep (h1,h2) | full hand, flop]."""
+        community = [c for c in observation["community_cards"] if c != -1]
+        opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
+        DISCARD_TEMP = 6.0
+        KEEP_PAIRS = list(itertools.combinations(range(5), 2))
+
+        my_discs  = set(c for c in observation["my_discarded_cards"] if c != -1)
+        we_are_bb = observation["blind_position"] == 1
+        # SB discards after seeing BB's discards; BB discards first (blind)
+        opp_is_sb = we_are_bb
+
+        for i, (h1, h2) in enumerate(self.opp_pairs):
+            if self.opp_weights[i] < 1e-9:
+                continue
+            full_hand = [h1, h2] + opp_discs
+            dead = set(full_hand)
+            if opp_is_sb:
+                dead |= my_discs
+            equities = []
+            for ki, kj in KEEP_PAIRS:
+                k1, k2 = full_hand[ki], full_hand[kj]
+                equities.append(self._fast_equity(k1, k2, community, n=20, extra_dead=dead))
+            equities = np.array(equities)
+            log_probs = DISCARD_TEMP * equities
+            log_probs -= log_probs.max()
+            probs = np.exp(log_probs)
+            probs /= probs.sum()
+            # action 0 = keep (0,1) = keep (h1, h2)
+            self.opp_weights[i] *= probs[0]
         self._normalize()
 
     def _update_posterior(self, observation):
@@ -201,27 +232,37 @@ class PlayerAgent(Agent):
         elif opp_bet == my_bet:
             self._update_check(observation)
 
+    def _opp_known_dead(self, observation):
+        """Cards dead from opponent's perspective: their discards + our discards."""
+        my_discs  = set(c for c in observation["my_discarded_cards"] if c != -1)
+        opp_discs = set(c for c in observation["opp_discarded_cards"] if c != -1)
+        return my_discs | opp_discs
+
     def _update_raise(self, observation):
         community = [c for c in observation["community_cards"] if c != -1]
+        dead = self._opp_known_dead(observation)
         for i, (h1, h2) in enumerate(self.opp_pairs):
             if self.opp_weights[i] < 1e-9:
                 continue
-            eq = self._fast_equity(h1, h2, community)
+            eq = self._fast_equity(h1, h2, community, extra_dead=dead)
             self.opp_weights[i] *= np.exp(2.0 * eq)
         self._normalize()
 
     def _update_check(self, observation):
         community = [c for c in observation["community_cards"] if c != -1]
+        dead = self._opp_known_dead(observation)
         for i, (h1, h2) in enumerate(self.opp_pairs):
             if self.opp_weights[i] < 1e-9:
                 continue
-            eq = self._fast_equity(h1, h2, community)
+            eq = self._fast_equity(h1, h2, community, extra_dead=dead)
             self.opp_weights[i] *= np.exp(-1.0 * eq)
         self._normalize()
 
-    def _fast_equity(self, h1, h2, community, n=10):
+    def _fast_equity(self, h1, h2, community, n=10, extra_dead=None):
         """Quick MC equity for posterior updates."""
         dead = set(community) | {h1, h2}
+        if extra_dead:
+            dead |= extra_dead
         live = [c for c in range(27) if c not in dead]
         n_remaining = 5 - len(community)
         wins = 0.0
@@ -241,9 +282,11 @@ class PlayerAgent(Agent):
                 wins += 0.5
         return wins / n
 
-    def _hand_vs_hand_equity(self, hero_cards, vill_cards, community, n=10):
+    def _hand_vs_hand_equity(self, hero_cards, vill_cards, community, n=10, extra_dead=None):
         """MC equity for a fixed hero hand against a fixed villain hand."""
         dead = set(community) | set(hero_cards) | set(vill_cards)
+        if extra_dead:
+            dead |= extra_dead
         live = [c for c in range(27) if c not in dead]
         n_remaining = 5 - len(community)
         wins = 0.0
@@ -287,6 +330,9 @@ class PlayerAgent(Agent):
 
         my_cards  = [c for c in observation["my_cards"] if c != -1]
         community = [c for c in observation["community_cards"] if c != -1]
+        my_discs  = set(c for c in observation["my_discarded_cards"] if c != -1)
+        opp_discs = set(c for c in observation["opp_discarded_cards"] if c != -1)
+        all_discs = my_discs | opp_discs
 
         if len(my_cards) != 2:
             return probs
@@ -298,7 +344,7 @@ class PlayerAgent(Agent):
             w = self.opp_weights[i]
             if w < 1e-4:
                 continue
-            eq = self._hand_vs_hand_equity(my_cards, [h1, h2], community, n=8)
+            eq = self._hand_vs_hand_equity(my_cards, [h1, h2], community, n=8, extra_dead=all_discs)
             equity  += w * eq
             total_w += w
         if total_w > 0:
@@ -329,44 +375,8 @@ class PlayerAgent(Agent):
         if ev_probs.sum() > 0:
             ev_probs /= ev_probs.sum()
 
-        weight = min(0.8, (POSTERIOR_THRESHOLD - eff) / POSTERIOR_THRESHOLD)
+        weight = min(0.4, (POSTERIOR_THRESHOLD - eff) / POSTERIOR_THRESHOLD)
         return (1 - weight) * probs + weight * ev_probs
-
-    # ── opponent model ────────────────────────────────────────────────────────
-
-    def _apply_opp_model(self, probs, mask):
-        if self.opp_postflop_actions < 20:
-            return probs
-        fold_rate = self.opp_postflop_folds / max(self.opp_postflop_actions, 1)
-        if fold_rate > OPP_FOLD_THRESHOLD and mask[BET_SMALL] > 0 and mask[CHECK] > 0:
-            shift = min(0.25, (fold_rate - OPP_FOLD_THRESHOLD) * 1.5)
-            transfer = shift * probs[CHECK]
-            probs[CHECK]     -= transfer
-            probs[BET_SMALL] += transfer * 0.4
-            probs[BET_MED]   += transfer * 0.35
-            probs[BET_LARGE] += transfer * 0.25
-        return probs
-
-    # ── variance adjustment ───────────────────────────────────────────────────
-
-    def _variance_adjust(self, probs, mask, hands_remaining):
-        if self.hands_played == 0:
-            return probs
-        ev_per_hand = self.cumulative_chips / self.hands_played
-        if ev_per_hand >= 0:
-            return probs
-        urgency = min(1.0, abs(ev_per_hand) * hands_remaining / 100.0)
-        shift   = urgency * 0.12
-        if mask[FOLD] > 0 and mask[CALL] > 0:
-            t = shift * probs[FOLD]
-            probs[FOLD] -= t
-            probs[CALL] += t
-        if mask[BET_SMALL] > 0 and mask[BET_LARGE] > 0:
-            t = shift * probs[BET_SMALL] * 0.5
-            probs[BET_SMALL] -= t
-            probs[BET_MED]   += t * 0.5
-            probs[BET_LARGE] += t * 0.5
-        return probs
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
