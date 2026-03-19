@@ -67,6 +67,7 @@ class PlayerAgent(Agent):
         self.opp_pairs      = None
         self.opp_weights    = None
         self.zeroed_streets = set()
+        self.posterior_events = set()
 
     def __name__(self):
         return "PlayerAgent"
@@ -80,7 +81,8 @@ class PlayerAgent(Agent):
             return
 
         street = observation["street"]
-        if street >= 1:
+        acting_agent = observation.get("acting_agent")
+        if street >= 1 and acting_agent == observation["blind_position"]:
             self._update_posterior(observation)
 
     # ── act ───────────────────────────────────────────────────────────────────
@@ -96,6 +98,7 @@ class PlayerAgent(Agent):
             self.opp_pairs      = None
             self.opp_weights    = None
             self.zeroed_streets = set()
+            self.posterior_events = set()
 
         # layer 1: foldout heuristic
         if self.cumulative_chips > FOLDOUT_RATIO * hands_remaining:
@@ -216,6 +219,16 @@ class PlayerAgent(Agent):
         if self.opp_pairs is None:
             return
 
+        event = (
+            observation["street"],
+            observation["my_bet"],
+            observation["opp_bet"],
+            tuple(observation["community_cards"]),
+            tuple(observation["opp_discarded_cards"]),
+        )
+        if event in self.posterior_events:
+            return
+
         street = observation["street"]
         if street not in self.zeroed_streets:
             community = set(c for c in observation["community_cards"] if c != -1)
@@ -231,6 +244,8 @@ class PlayerAgent(Agent):
             self._update_raise(observation)
         elif opp_bet == my_bet:
             self._update_check(observation)
+
+        self.posterior_events.add(event)
 
     def _opp_known_dead(self, observation):
         """Cards dead from opponent's perspective: their discards + our discards."""
@@ -350,28 +365,53 @@ class PlayerAgent(Agent):
         if total_w > 0:
             equity /= total_w
 
-        # simple EV-based probs
-        ev_probs = np.zeros_like(probs)
         pot = observation["pot_size"]
         call_amt = observation["opp_bet"] - observation["my_bet"]
+        min_raise = observation["min_raise"]
+        max_raise = observation["max_raise"]
+        small_raise = int(np.clip(pot // 3, min_raise, max_raise)) if max_raise >= min_raise else 0
+        med_raise = int(np.clip(2 * pot // 3, min_raise, max_raise)) if max_raise >= min_raise else 0
+        large_raise = max_raise
+        range_confidence = max(0.0, (POSTERIOR_THRESHOLD - eff) / POSTERIOR_THRESHOLD)
+        pressure = max(0.0, equity - 0.5)
+
+        def showdown_ev(commitment):
+            return equity * (pot + commitment) - (1.0 - equity) * commitment
+
+        def bet_ev(raise_amount, aggression_bonus):
+            if raise_amount <= 0:
+                return -1e9
+            fold_equity = np.clip(
+                0.06 + 0.22 * range_confidence + aggression_bonus + 0.12 * pressure,
+                0.02,
+                0.42,
+            )
+            risk_penalty = raise_amount * max(0.0, 0.56 - equity)
+            return fold_equity * pot + (1.0 - fold_equity) * showdown_ev(raise_amount) - risk_penalty
+
+        scores = np.full_like(probs, -1e9, dtype=np.float64)
 
         if mask[FOLD] > 0:
-            ev_probs[FOLD]  = 0.0
+            scores[FOLD] = -0.25 * call_amt
         if mask[CHECK] > 0:
-            ev_probs[CHECK] = equity
+            scores[CHECK] = showdown_ev(0)
         if mask[CALL] > 0:
-            ev_probs[CALL]  = equity * (pot + call_amt) - (1 - equity) * call_amt
+            scores[CALL] = showdown_ev(call_amt)
         if mask[BET_SMALL] > 0:
-            ev_probs[BET_SMALL] = equity * pot * 1.33
+            scores[BET_SMALL] = bet_ev(small_raise, aggression_bonus=0.05)
         if mask[BET_MED] > 0:
-            ev_probs[BET_MED]   = equity * pot * 1.67
+            scores[BET_MED] = bet_ev(med_raise, aggression_bonus=0.02)
         if mask[BET_LARGE] > 0:
-            ev_probs[BET_LARGE] = equity * pot * 2.0
+            scores[BET_LARGE] = bet_ev(large_raise, aggression_bonus=-0.04)
 
-        # softmax
-        ev_probs = ev_probs * mask
-        ev_probs -= ev_probs[mask > 0].max()
-        ev_probs  = np.where(mask > 0, np.exp(ev_probs / 0.5), 0.0)
+        ev_probs = np.zeros_like(probs, dtype=np.float64)
+        valid_idx = np.flatnonzero(mask > 0)
+        if len(valid_idx) == 0:
+            return probs
+        logits = scores[valid_idx]
+        logits -= logits.max()
+        temperature = 0.75 - 0.25 * range_confidence
+        ev_probs[valid_idx] = np.exp(logits / temperature)
         if ev_probs.sum() > 0:
             ev_probs /= ev_probs.sum()
 
@@ -409,15 +449,21 @@ class PlayerAgent(Agent):
             if valid[at.RAISE.value]:
                 amt = int(np.clip(pot // 3, min_r, max_r))
                 return at.RAISE.value, amt, 0, 0
+            if valid[at.CALL.value]:
+                return at.CALL.value, 0, 0, 0
             return at.CHECK.value, 0, 0, 0
         elif action == BET_MED:
             if valid[at.RAISE.value]:
                 amt = int(np.clip(2 * pot // 3, min_r, max_r))
                 return at.RAISE.value, amt, 0, 0
+            if valid[at.CALL.value]:
+                return at.CALL.value, 0, 0, 0
             return at.CHECK.value, 0, 0, 0
         elif action == BET_LARGE:
             if valid[at.RAISE.value]:
                 amt = int(np.clip(max_r, min_r, max_r))
                 return at.RAISE.value, amt, 0, 0
+            if valid[at.CALL.value]:
+                return at.CALL.value, 0, 0, 0
             return at.CHECK.value, 0, 0, 0
         return self._safe_action(observation)

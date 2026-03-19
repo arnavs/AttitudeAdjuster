@@ -22,8 +22,8 @@ ckpt = torch.load(CKPT_PATH, map_location=device)
 
 for p in [0, 1]:
     for tag, net_fn, buf_key in [
-        ("betting", make_betting_net, f"sb_{p}"),
-        ("discard", make_discard_net, f"sd_{p}"),
+        ("betting", make_betting_net, f"sb_buf_{p}"),
+        ("discard", make_discard_net, f"sd_buf_{p}"),
     ]:
         buf = StrategyBuffer(len(ckpt[buf_key]) + 1)
         buf.buffer = ckpt[buf_key]
