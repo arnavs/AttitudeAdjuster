@@ -30,7 +30,7 @@ _CKPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoint
 
 FOLDOUT_RATIO       = 1.55
 POSTERIOR_THRESHOLD = 15.0
-TIME_BUDGET         = 1.2
+TIME_BUDGET         = 2
 OPP_FOLD_THRESHOLD  = 0.65
 
 
@@ -48,14 +48,12 @@ class PlayerAgent(Agent):
             dn = make_discard_net()
             bp = os.path.join(_CKPT_DIR, f"strategy_betting_p{p}_final.pt")
             dp = os.path.join(_CKPT_DIR, f"strategy_discard_p{p}_final.pt")
-            if os.path.exists(bp):
-                bn.load_state_dict(torch.load(bp, map_location='cpu'))
-            else:
-                self.logger.warning(f"Betting net p{p} not found, using random")
-            if os.path.exists(dp):
-                dn.load_state_dict(torch.load(dp, map_location='cpu'))
-            else:
-                self.logger.warning(f"Discard net p{p} not found, using random")
+            if not os.path.exists(bp):
+                raise FileNotFoundError(f"Betting net not found: {bp}")
+            if not os.path.exists(dp):
+                raise FileNotFoundError(f"Discard net not found: {dp}")
+            bn.load_state_dict(torch.load(bp, map_location='cpu'))
+            dn.load_state_dict(torch.load(dp, map_location='cpu'))
             bn.eval(); dn.eval()
             self.bet_nets[p]  = bn
             self.disc_nets[p] = dn

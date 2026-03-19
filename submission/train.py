@@ -35,8 +35,8 @@ from traversal import run_traversal
 N_ITERATIONS    = 50_000
 K_TRAVERSALS    = 500         # per iteration per player (one per core)
 TRAIN_EVERY     = 10        # retrain value nets every N iterations
-VALUE_BUF_SIZE  = 2_000_000
-STRAT_BUF_SIZE  = 2_000_000
+VALUE_BUF_SIZE  = 1_000_000
+STRAT_BUF_SIZE  = 1_000_000
 BATCH_SIZE      = 1024
 N_TRAIN_STEPS   = 400
 N_CORES         = 8
