@@ -167,8 +167,17 @@ class PlayerAgent(Agent):
                 best_eq, best_i, best_j = eq, i, j
         return best_i, best_j
 
-    def _bb_keep_pair_values(self, full_hand, community, n_samples=20, sb_eq_samples=8):
-        """BB level-1: equity for each keep-pair vs SB choosing by equity."""
+    def _precompute_sb_keeps(self, pool, community, sb_dead, n=1):
+        """Precompute SB's best keep-pair (by equity) for all possible 5-card hands from pool."""
+        cache = {}
+        for hand in itertools.combinations(pool, 5):
+            hand_list = list(hand)
+            bi, bj = self._sb_best_keep(hand_list, community, sb_dead, n=n)
+            cache[hand] = (hand_list[bi], hand_list[bj])
+        return cache
+
+    def _bb_keep_pair_values(self, full_hand, community, n_samples=20):
+        """BB level-1: equity for each keep-pair vs SB choosing best pair."""
         n_remaining = 5 - len(community)
 
         values = []
@@ -176,16 +185,19 @@ class PlayerAgent(Agent):
             k1, k2 = full_hand[ki], full_hand[kj]
             bb_discards = set(full_hand) - {k1, k2}
             sb_dead = set(community) | bb_discards
+            # pool excludes BB's full hand + community (BB holds k1,k2; discards are visible)
             pool = [c for c in range(27) if c not in (set(community) | set(full_hand))]
+
+            # precompute SB's best keep (equity-based) for all possible SB hands
+            sb_cache = self._precompute_sb_keeps(pool, community, sb_dead, n=4)
 
             wins, counted = 0.0, 0
             for _ in range(n_samples):
                 if len(pool) < 5 + n_remaining:
                     break
                 sampled = np.random.choice(pool, size=5 + n_remaining, replace=False)
-                sb_hand = [int(c) for c in sampled[:5]]
-                si, sj = self._sb_best_keep(sb_hand, community, sb_dead, n=sb_eq_samples)
-                r1, r2 = sb_hand[si], sb_hand[sj]
+                sb_hand_key = tuple(sorted(int(c) for c in sampled[:5]))
+                r1, r2 = sb_cache[sb_hand_key]
                 remaining_board = [int(c) for c in sampled[5:]]
 
                 board5 = community + remaining_board
@@ -251,7 +263,7 @@ class PlayerAgent(Agent):
             values = np.array(values, dtype=np.float64)
         else:
             values = self._bb_keep_pair_values(
-                full_hand, community, n_samples=n_samples, sb_eq_samples=8)
+                full_hand, community, n_samples=n_samples)
 
         logits = temp * values
         logits -= logits.max()
