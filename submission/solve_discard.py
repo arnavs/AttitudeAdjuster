@@ -81,6 +81,13 @@ def canonical_hand_flop_with_index(hand, flop):
     return best, kp_idx
 
 
+def canonical_hand_flop_with_keep_pair(hand, flop, keep_i, keep_j):
+    """Canonical key + canonical keep-pair slot for hand indices keep_i, keep_j."""
+    ordered_hand = [hand[keep_i], hand[keep_j]]
+    ordered_hand.extend(hand[idx] for idx in range(5) if idx != keep_i and idx != keep_j)
+    return canonical_hand_flop_with_index(tuple(ordered_hand), flop)
+
+
 def sb_best_keep(evaluator, sb_hand, flop, sb_known_dead, bb_table=None, bb_discs=None, n=4):
     """SB picks best keep-pair by equity. If bb_table exists, weight by BB's keep probs."""
     dead = sb_known_dead | set(sb_hand)
@@ -127,7 +134,8 @@ def compute_bb_values(evaluator, hand, flop, bb_table=None, n_samples=5):
     """Compute equity for each BB keep-pair against SB's best response."""
     n_remaining = 5 - len(flop)
 
-    values = []
+    values = np.zeros(len(KEEP_PAIRS), dtype=np.float64)
+    seen_slots = np.zeros(len(KEEP_PAIRS), dtype=bool)
     for ki, kj in KEEP_PAIRS:
         k1, k2 = hand[ki], hand[kj]
         bb_discards = [hand[x] for x in range(5) if x != ki and x != kj]
@@ -161,8 +169,12 @@ def compute_bb_values(evaluator, hand, flop, bb_table=None, n_samples=5):
             elif my_rank == opp_rank:
                 wins += 0.5
             counted += 1
-        values.append(wins / max(counted, 1))
-    return np.array(values, dtype=np.float64)
+        _, kp_idx = canonical_hand_flop_with_keep_pair(hand, flop, ki, kj)
+        values[kp_idx] = wins / max(counted, 1)
+        seen_slots[kp_idx] = True
+
+    assert seen_slots.all(), f"Expected keep-pair remapping to cover all slots, got {seen_slots}"
+    return values
 
 
 def _worker(args):

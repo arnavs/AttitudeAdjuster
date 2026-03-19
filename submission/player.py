@@ -146,7 +146,7 @@ class PlayerAgent(Agent):
         """Probability that BB kept (h1, h2) from [h1, h2] + opp_discs."""
         from solve_discard import canonical_hand_flop_with_index
         bb_full = [h1, h2] + list(opp_discs)
-        bb_key, kp_idx = canonical_hand_flop_with_index(tuple(bb_full), tuple(community))
+        bb_key, kp_idx = canonical_hand_flop_with_index(tuple(bb_full), tuple(community[:3]))
         if self.bb_discard_table and bb_key in self.bb_discard_table:
             return self.bb_discard_table[bb_key][kp_idx]
         return 0.1
@@ -225,6 +225,9 @@ class PlayerAgent(Agent):
 
     def _update_posterior_discard(self, observation):
         """Weight by BB's table probability of keeping each candidate pair."""
+        if observation["blind_position"] != 0:
+            return
+
         opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
         community = [c for c in observation["community_cards"] if c != -1]
 
