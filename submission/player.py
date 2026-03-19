@@ -39,7 +39,15 @@ class PlayerAgent(Agent):
         self.action_types = PokerEnv.ActionType
         self.evaluator    = WrappedEval()
 
-        # load strategy networks (betting only; discards use heuristic)
+        # load BB discard table
+        import pickle
+        bb_table_path = os.path.join(_CKPT_DIR, "bb_discard_table.pkl")
+        self.bb_discard_table = None
+        if os.path.exists(bb_table_path):
+            with open(bb_table_path, "rb") as f:
+                self.bb_discard_table = pickle.load(f)
+
+        # load strategy networks (betting only; discards use table)
         self.bet_nets = {}
         for p in [0, 1]:
             bn = make_betting_net()
@@ -134,118 +142,53 @@ class PlayerAgent(Agent):
     def _act_discard(self, observation):
         return self._heuristic_discard(observation)
 
-    def _best_keep_by_rank(self, five_cards, board_treys):
-        """Return (best_i, best_j) for strongest hand rank on this board. No MC."""
-        best_rank, best_i, best_j = float('inf'), 0, 1
-        for i, j in itertools.combinations(range(5), 2):
-            rank = self.evaluator.evaluate(
-                [PokerEnv.int_to_card(five_cards[i]), PokerEnv.int_to_card(five_cards[j])],
-                board_treys)
-            if rank < best_rank:
-                best_rank, best_i, best_j = rank, i, j
-        return best_i, best_j
+    def _bb_discard_probs(self, hand, flop):
+        """Look up BB's discard strategy from precomputed table."""
+        from solve_discard import canonical_hand_flop
+        key = canonical_hand_flop(tuple(sorted(hand)), tuple(sorted(flop)))
+        if self.bb_discard_table and key in self.bb_discard_table:
+            return self.bb_discard_table[key]
+        return np.ones(10) / 10
 
-    def _keep_pair_equities(self, five_cards, community, extra_dead=None, n=10):
-        """Compute MC equity for all 10 keep-pairs from a 5-card hand."""
-        dead = set(five_cards)
-        if extra_dead:
-            dead |= extra_dead
-        equities = []
-        for i, j in itertools.combinations(range(5), 2):
-            eq = self._fast_equity(five_cards[i], five_cards[j], community, n=n, extra_dead=dead)
-            equities.append(eq)
-        return np.array(equities)
+    def _bb_discard_prob_for_pair(self, h1, h2, opp_discs, community):
+        """Probability that BB kept (h1, h2) from [h1, h2] + opp_discs."""
+        from solve_discard import canonical_hand_flop_with_index
+        bb_full = [h1, h2] + list(opp_discs)
+        bb_key, kp_idx = canonical_hand_flop_with_index(tuple(bb_full), tuple(community))
+        if self.bb_discard_table and bb_key in self.bb_discard_table:
+            return self.bb_discard_table[bb_key][kp_idx]
+        return 0.1
 
-    # FROM BB's PERSPECTIVE
-    def _sb_best_keep(self, sb_hand, community, dead_cards, n=8):
-        """SB picks best keep-pair by MC equity with dead cards excluded."""
-        best_eq, best_i, best_j = -1.0, 0, 1
-        for i, j in itertools.combinations(range(5), 2):
-            eq = self._fast_equity(sb_hand[i], sb_hand[j], community, n=n,
-                                   extra_dead=dead_cards | set(sb_hand))
-            if eq > best_eq:
-                best_eq, best_i, best_j = eq, i, j
-        return best_i, best_j
+    def _heuristic_discard(self, observation):
+        """BB uses table lookup. SB uses table-weighted equity."""
+        my_cards  = [c for c in observation["my_cards"] if c != -1]
+        community = [c for c in observation["community_cards"] if c != -1]
+        opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
+        we_are_sb = observation["blind_position"] == 0
+        keep_pairs = list(itertools.combinations(range(len(my_cards)), 2))
 
-    def _precompute_sb_keeps(self, pool, community, sb_dead, n=1):
-        """Precompute SB's best keep-pair (by equity) for all possible 5-card hands from pool."""
-        cache = {}
-        for hand in itertools.combinations(pool, 5):
-            hand_list = list(hand)
-            bi, bj = self._sb_best_keep(hand_list, community, sb_dead, n=n)
-            cache[hand] = (hand_list[bi], hand_list[bj])
-        return cache
-
-    def _bb_keep_pair_values(self, full_hand, community, n_samples=20):
-        """BB level-1: equity for each keep-pair vs SB choosing best pair."""
-        n_remaining = 5 - len(community)
-
-        values = []
-        for ki, kj in itertools.combinations(range(len(full_hand)), 2):
-            k1, k2 = full_hand[ki], full_hand[kj]
-            bb_discards = set(full_hand) - {k1, k2}
-            sb_dead = set(community) | bb_discards
-            # pool excludes BB's full hand + community (BB holds k1,k2; discards are visible)
-            pool = [c for c in range(27) if c not in (set(community) | set(full_hand))]
-
-            # precompute SB's best keep (equity-based) for all possible SB hands
-            sb_cache = self._precompute_sb_keeps(pool, community, sb_dead, n=4)
-
-            wins, counted = 0.0, 0
-            for _ in range(n_samples):
-                if len(pool) < 5 + n_remaining:
-                    break
-                sampled = np.random.choice(pool, size=5 + n_remaining, replace=False)
-                sb_hand_key = tuple(sorted(int(c) for c in sampled[:5]))
-                r1, r2 = sb_cache[sb_hand_key]
-                remaining_board = [int(c) for c in sampled[5:]]
-
-                board5 = community + remaining_board
-                board5_treys = [PokerEnv.int_to_card(c) for c in board5]
-                my_rank = self.evaluator.evaluate(
-                    [PokerEnv.int_to_card(k1), PokerEnv.int_to_card(k2)], board5_treys)
-                opp_rank = self.evaluator.evaluate(
-                    [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)], board5_treys)
-                if my_rank < opp_rank:
-                    wins += 1.0
-                elif my_rank == opp_rank:
-                    wins += 0.5
-                counted += 1
-            values.append(wins / max(counted, 1))
-        return np.array(values, dtype=np.float64)
-
-    def _discard_policy_probs(self, full_hand, community, actor_is_sb, visible_opp_discs=None,
-                              n_samples=20, bb_infer_samples=8, temp=6.0):
-        """Shared discard policy used both for acting and posterior updates."""
-        visible_opp_discs = [c for c in (visible_opp_discs or []) if c != -1]
-        keep_pairs = list(itertools.combinations(range(len(full_hand)), 2))
-
-        if actor_is_sb and len(visible_opp_discs) == 3:
-            dead = set(full_hand) | set(visible_opp_discs) | set(community)
+        if not we_are_sb:
+            # BB: table lookup
+            probs = self._bb_discard_probs(my_cards, community)
+            best_idx = int(np.argmax(probs))
+        else:
+            # SB level-2: equity weighted by BB's table probabilities
+            dead = set(my_cards) | set(opp_discs) | set(community)
             pool = [c for c in range(27) if c not in dead]
             n_remaining = 5 - len(community)
-            bb_policy_cache = {}
-            values = []
+            n_samples = 24
 
-            for ki, kj in keep_pairs:
-                k1, k2 = full_hand[ki], full_hand[kj]
+            best_eq, best_idx = -1.0, 0
+            for idx, (ki, kj) in enumerate(keep_pairs):
+                k1, k2 = my_cards[ki], my_cards[kj]
                 weighted_wins, total_weight = 0.0, 0.0
                 for _ in range(n_samples):
                     if len(pool) < 2 + n_remaining:
                         break
                     sampled = np.random.choice(pool, size=2 + n_remaining, replace=False)
                     r1, r2 = int(sampled[0]), int(sampled[1])
-                    bb_full = [r1, r2] + visible_opp_discs
-                    bb_key = tuple(bb_full)
-                    if bb_key not in bb_policy_cache:
-                        bb_values = self._bb_keep_pair_values(
-                            bb_full, community, n_samples=bb_infer_samples)
-                        bb_logits = temp * bb_values
-                        bb_logits -= bb_logits.max()
-                        bb_probs = np.exp(bb_logits)
-                        bb_probs /= bb_probs.sum()
-                        bb_policy_cache[bb_key] = bb_probs[0]
-                    weight = bb_policy_cache[bb_key]
+
+                    weight = self._bb_discard_prob_for_pair(r1, r2, opp_discs, community)
                     if weight < 1e-9:
                         continue
 
@@ -259,33 +202,11 @@ class PlayerAgent(Agent):
                     outcome = 1.0 if my_rank < opp_rank else 0.5 if my_rank == opp_rank else 0.0
                     weighted_wins += weight * outcome
                     total_weight += weight
-                values.append(weighted_wins / max(total_weight, 1e-9))
-            values = np.array(values, dtype=np.float64)
-        else:
-            values = self._bb_keep_pair_values(
-                full_hand, community, n_samples=n_samples)
 
-        logits = temp * values
-        logits -= logits.max()
-        probs = np.exp(logits)
-        probs /= probs.sum()
-        return values, probs
+                eq = weighted_wins / max(total_weight, 1e-9)
+                if eq > best_eq:
+                    best_eq, best_idx = eq, idx
 
-    def _heuristic_discard(self, observation):
-        """BB level-1, SB level-2 using the same discard model for acting and inference."""
-        my_cards  = [c for c in observation["my_cards"] if c != -1]
-        community = [c for c in observation["community_cards"] if c != -1]
-        opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
-        we_are_sb = observation["blind_position"] == 0
-
-        values, _ = self._discard_policy_probs(
-            my_cards, community,
-            actor_is_sb=we_are_sb,
-            visible_opp_discs=opp_discs,
-            n_samples=24, bb_infer_samples=8, temp=6.0,
-        )
-        best_idx = int(np.argmax(values))
-        keep_pairs = list(itertools.combinations(range(len(my_cards)), 2))
         best_ki, best_kj = keep_pairs[best_idx]
         return self.action_types.DISCARD.value, 0, best_ki, best_kj
 
@@ -306,26 +227,15 @@ class PlayerAgent(Agent):
         self._update_posterior_discard(observation)
 
     def _update_posterior_discard(self, observation):
-        """Weight by relative discard likelihood under the same discard model used for acting."""
-        community = [c for c in observation["community_cards"] if c != -1]
+        """Weight by BB's table probability of keeping each candidate pair."""
         opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
-        my_discs  = [c for c in observation["my_discarded_cards"] if c != -1]
-
-        we_are_bb = observation["blind_position"] == 1
-        opp_is_sb = we_are_bb
+        community = [c for c in observation["community_cards"] if c != -1]
 
         for i, (h1, h2) in enumerate(self.opp_pairs):
             if self.opp_weights[i] < 1e-9:
                 continue
-            full_hand = [h1, h2] + opp_discs
-            _, probs = self._discard_policy_probs(
-                full_hand, community,
-                actor_is_sb=opp_is_sb,
-                visible_opp_discs=my_discs if opp_is_sb else [],
-                n_samples=12, bb_infer_samples=6, temp=6.0,
-            )
-            # action 0 = keep (0,1) = keep (h1, h2)
-            self.opp_weights[i] *= probs[0]
+            prob = self._bb_discard_prob_for_pair(h1, h2, opp_discs, community)
+            self.opp_weights[i] *= prob
         self._normalize()
 
     def _update_posterior(self, observation):
