@@ -156,48 +156,26 @@ class PlayerAgent(Agent):
             equities.append(eq)
         return np.array(equities)
 
-    def _heuristic_discard(self, observation):
-        """BB level-1 (best pair vs SB's best pair), SB level-2 (rational filter on BB)."""
-        my_cards  = [c for c in observation["my_cards"] if c != -1]
-        community = [c for c in observation["community_cards"] if c != -1]
-        opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
+    def _bb_keep_pair_values(self, full_hand, community, visible_opp_discs=None, n_samples=20):
+        """BB level-1 discard values: showdown equity vs SB keeping best current pair."""
+        visible_opp_discs = visible_opp_discs or []
         board_treys = [PokerEnv.int_to_card(c) for c in community]
-        we_are_sb = observation["blind_position"] == 0
-        all_dead  = set(my_cards) | set(opp_discs) | set(community)
+        dead = set(full_hand) | set(visible_opp_discs) | set(community)
+        pool = [c for c in range(27) if c not in dead]
         n_remaining = 5 - len(community)
-        n_samples = 40
 
-        keep_pairs = list(itertools.combinations(range(len(my_cards)), 2))
-        best_eq, best_ki, best_kj = -1.0, 0, 1
-
-        for ki, kj in keep_pairs:
-            k1, k2 = my_cards[ki], my_cards[kj]
-            my_disc_set = set(my_cards) - {k1, k2}
-            kept_dead = all_dead | my_disc_set
-            kept_pool = [c for c in range(27) if c not in kept_dead and c != k1 and c != k2]
-
+        values = []
+        for ki, kj in itertools.combinations(range(len(full_hand)), 2):
+            k1, k2 = full_hand[ki], full_hand[kj]
             wins, counted = 0.0, 0
             for _ in range(n_samples):
-                if we_are_sb and len(opp_discs) == 3:
-                    # SB level-2: sample 2 opp cards + board, filter by rational BB keep
-                    if len(kept_pool) < 2 + n_remaining:
-                        break
-                    sampled = np.random.choice(kept_pool, size=2 + n_remaining, replace=False)
-                    r1, r2 = int(sampled[0]), int(sampled[1])
-                    opp_full = [r1, r2] + opp_discs
-                    bi, bj = self._best_keep_by_rank(opp_full, board_treys)
-                    if (bi, bj) != (0, 1):
-                        continue
-                    remaining_board = [int(c) for c in sampled[2:]]
-                else:
-                    # BB level-1: sample SB's full 5 cards + board, SB keeps best pair
-                    if len(kept_pool) < 5 + n_remaining:
-                        break
-                    sampled = np.random.choice(kept_pool, size=5 + n_remaining, replace=False)
-                    sb_hand = [int(c) for c in sampled[:5]]
-                    si, sj = self._best_keep_by_rank(sb_hand, board_treys)
-                    r1, r2 = sb_hand[si], sb_hand[sj]
-                    remaining_board = [int(c) for c in sampled[5:]]
+                if len(pool) < 5 + n_remaining:
+                    break
+                sampled = np.random.choice(pool, size=5 + n_remaining, replace=False)
+                sb_hand = [int(c) for c in sampled[:5]]
+                si, sj = self._best_keep_by_rank(sb_hand, board_treys)
+                r1, r2 = sb_hand[si], sb_hand[sj]
+                remaining_board = [int(c) for c in sampled[5:]]
 
                 board5 = community + remaining_board
                 board5_treys = [PokerEnv.int_to_card(c) for c in board5]
@@ -210,11 +188,82 @@ class PlayerAgent(Agent):
                 elif my_rank == opp_rank:
                     wins += 0.5
                 counted += 1
+            values.append(wins / max(counted, 1))
+        return np.array(values, dtype=np.float64)
 
-            eq = wins / max(counted, 1)
-            if eq > best_eq:
-                best_eq, best_ki, best_kj = eq, ki, kj
+    def _discard_policy_probs(self, full_hand, community, actor_is_sb, visible_opp_discs=None,
+                              n_samples=20, bb_infer_samples=8, temp=6.0):
+        """Shared discard policy used both for acting and posterior updates."""
+        visible_opp_discs = [c for c in (visible_opp_discs or []) if c != -1]
+        keep_pairs = list(itertools.combinations(range(len(full_hand)), 2))
 
+        if actor_is_sb and len(visible_opp_discs) == 3:
+            dead = set(full_hand) | set(visible_opp_discs) | set(community)
+            pool = [c for c in range(27) if c not in dead]
+            n_remaining = 5 - len(community)
+            bb_policy_cache = {}
+            values = []
+
+            for ki, kj in keep_pairs:
+                k1, k2 = full_hand[ki], full_hand[kj]
+                weighted_wins, total_weight = 0.0, 0.0
+                for _ in range(n_samples):
+                    if len(pool) < 2 + n_remaining:
+                        break
+                    sampled = np.random.choice(pool, size=2 + n_remaining, replace=False)
+                    r1, r2 = int(sampled[0]), int(sampled[1])
+                    bb_full = [r1, r2] + visible_opp_discs
+                    bb_key = tuple(bb_full)
+                    if bb_key not in bb_policy_cache:
+                        bb_values = self._bb_keep_pair_values(
+                            bb_full, community, n_samples=bb_infer_samples)
+                        bb_logits = temp * bb_values
+                        bb_logits -= bb_logits.max()
+                        bb_probs = np.exp(bb_logits)
+                        bb_probs /= bb_probs.sum()
+                        bb_policy_cache[bb_key] = bb_probs[0]
+                    weight = bb_policy_cache[bb_key]
+                    if weight < 1e-9:
+                        continue
+
+                    remaining_board = [int(c) for c in sampled[2:]]
+                    board5 = community + remaining_board
+                    board5_treys = [PokerEnv.int_to_card(c) for c in board5]
+                    my_rank = self.evaluator.evaluate(
+                        [PokerEnv.int_to_card(k1), PokerEnv.int_to_card(k2)], board5_treys)
+                    opp_rank = self.evaluator.evaluate(
+                        [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)], board5_treys)
+                    outcome = 1.0 if my_rank < opp_rank else 0.5 if my_rank == opp_rank else 0.0
+                    weighted_wins += weight * outcome
+                    total_weight += weight
+                values.append(weighted_wins / max(total_weight, 1e-9))
+            values = np.array(values, dtype=np.float64)
+        else:
+            values = self._bb_keep_pair_values(
+                full_hand, community, visible_opp_discs=visible_opp_discs, n_samples=n_samples)
+
+        logits = temp * values
+        logits -= logits.max()
+        probs = np.exp(logits)
+        probs /= probs.sum()
+        return values, probs
+
+    def _heuristic_discard(self, observation):
+        """BB level-1, SB level-2 using the same discard model for acting and inference."""
+        my_cards  = [c for c in observation["my_cards"] if c != -1]
+        community = [c for c in observation["community_cards"] if c != -1]
+        opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
+        we_are_sb = observation["blind_position"] == 0
+
+        values, _ = self._discard_policy_probs(
+            my_cards, community,
+            actor_is_sb=we_are_sb,
+            visible_opp_discs=opp_discs,
+            n_samples=24, bb_infer_samples=8, temp=6.0,
+        )
+        best_idx = int(np.argmax(values))
+        keep_pairs = list(itertools.combinations(range(len(my_cards)), 2))
+        best_ki, best_kj = keep_pairs[best_idx]
         return self.action_types.DISCARD.value, 0, best_ki, best_kj
 
     # ── posterior ─────────────────────────────────────────────────────────────
@@ -234,12 +283,11 @@ class PlayerAgent(Agent):
         self._update_posterior_discard(observation)
 
     def _update_posterior_discard(self, observation):
-        """Weight by relative discard likelihood: Pr[keep (h1,h2) | full hand, flop]."""
+        """Weight by relative discard likelihood under the same discard model used for acting."""
         community = [c for c in observation["community_cards"] if c != -1]
         opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
-        DISCARD_TEMP = 6.0
+        my_discs  = [c for c in observation["my_discarded_cards"] if c != -1]
 
-        my_discs  = set(c for c in observation["my_discarded_cards"] if c != -1)
         we_are_bb = observation["blind_position"] == 1
         opp_is_sb = we_are_bb
 
@@ -247,12 +295,12 @@ class PlayerAgent(Agent):
             if self.opp_weights[i] < 1e-9:
                 continue
             full_hand = [h1, h2] + opp_discs
-            extra_dead = my_discs if opp_is_sb else None
-            equities = self._keep_pair_equities(full_hand, community, extra_dead=extra_dead, n=20)
-            log_probs = DISCARD_TEMP * equities
-            log_probs -= log_probs.max()
-            probs = np.exp(log_probs)
-            probs /= probs.sum()
+            _, probs = self._discard_policy_probs(
+                full_hand, community,
+                actor_is_sb=opp_is_sb,
+                visible_opp_discs=my_discs if opp_is_sb else [],
+                n_samples=12, bb_infer_samples=6, temp=6.0,
+            )
             # action 0 = keep (0,1) = keep (h1, h2)
             self.opp_weights[i] *= probs[0]
         self._normalize()
