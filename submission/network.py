@@ -18,21 +18,36 @@ from encoder import INPUT_DIM, N_BETTING_ACTIONS, N_DISCARD_ACTIONS
 
 # ── network ──────────────────────────────────────────────────────────────────
 
+class ResBlock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.fc   = nn.Linear(dim, dim)
+        self.act  = nn.PReLU()
+
+    def forward(self, x):
+        return self.act(self.fc(self.norm(x)) + x)
+
 class CFRNet(nn.Module):
     def __init__(self, output_dim, hidden=256):
         super().__init__()
-        self.net = nn.Sequential(
+        self.input_layer = nn.Sequential(
             nn.Linear(INPUT_DIM, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            nn.PReLU(),
+        )
+        self.res1 = ResBlock(hidden)
+        self.res2 = ResBlock(hidden)
+        self.head = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            nn.PReLU(),
             nn.Linear(hidden // 2, output_dim),
         )
 
     def forward(self, x):
-        return self.net(x)
+        x = self.input_layer(x)
+        x = self.res1(x)
+        x = self.res2(x)
+        return self.head(x)
 
 
 def make_betting_net(hidden=256):

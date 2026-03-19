@@ -17,7 +17,7 @@ from encoder import (
     encode_infoset,
     betting_mask, discard_mask,
     KEEP_PAIRS, discard_action_to_keep_pair,
-    FOLD, CHECK, CALL, BET_SMALL, BET_LARGE,
+    FOLD, CHECK, CALL, BET_SMALL, BET_MED, BET_LARGE,
     N_BETTING_ACTIONS, N_DISCARD_ACTIONS,
 )
 from network import get_strategy
@@ -29,14 +29,15 @@ def compute_bet_sizes(pot, max_raise, min_raise):
     """
     Return abstract raise sizes in the same units as gym_env's `raise_amount`.
 
-    small = 1/3 pot raise, large = maximum legal raise.
-    Both are clamped to [min_raise, max_raise].
+    small = 1/3 pot, med = 2/3 pot, large = all-in.
+    All clamped to [min_raise, max_raise].
     """
     if max_raise < min_raise:
-        return 0, 0
+        return 0, 0, 0
     small = int(np.clip(pot // 3, min_raise, max_raise))
+    med   = int(np.clip(2 * pot // 3, min_raise, max_raise))
     large = int(max_raise)
-    return small, large
+    return small, med, large
 
 
 # ── game state ────────────────────────────────────────────────────────────────
@@ -118,7 +119,7 @@ class GameState:
         return self.STARTING_STACK - max(self.bets)
 
     def legal_betting_mask(self, player):
-        """5-dim binary mask of legal betting actions."""
+        """6-dim binary mask of legal betting actions."""
         opp = 1 - player
         call_amount = self.bets[opp] - self.bets[player]
         mask = np.zeros(N_BETTING_ACTIONS, dtype=np.float32)
@@ -134,9 +135,11 @@ class GameState:
 
         max_raise = self.max_raise_amount()
         if max_raise >= self.min_raise:
-            small, large = compute_bet_sizes(self.pot, max_raise, self.min_raise)
+            small, med, large = compute_bet_sizes(self.pot, max_raise, self.min_raise)
             if small >= self.min_raise:
                 mask[BET_SMALL] = 1.0
+            if med >= self.min_raise:
+                mask[BET_MED] = 1.0
             if large >= self.min_raise:
                 mask[BET_LARGE] = 1.0
 
@@ -159,7 +162,7 @@ class GameState:
         opp = 1 - player
         call_amount = self.bets[opp] - self.bets[player]
         max_raise = self.max_raise_amount()
-        small, large = compute_bet_sizes(self.pot, max_raise, self.min_raise)
+        small, med, large = compute_bet_sizes(self.pot, max_raise, self.min_raise)
 
         if action == FOLD:
             self.terminal = True
@@ -188,8 +191,8 @@ class GameState:
                 return False
             return True
 
-        elif action in (BET_SMALL, BET_LARGE):
-            raise_amount = small if action == BET_SMALL else large
+        elif action in (BET_SMALL, BET_MED, BET_LARGE):
+            raise_amount = small if action == BET_SMALL else (med if action == BET_MED else large)
             raise_amount = int(np.clip(raise_amount, self.min_raise, max_raise))
             new_bet = self.bets[opp] + raise_amount
             contribution = new_bet - self.bets[player]

@@ -21,7 +21,7 @@ from agents.agent import Agent
 from gym_env import PokerEnv, WrappedEval
 from encoder import (
     encode_infoset, betting_mask, discard_mask,
-    FOLD, CHECK, CALL, BET_SMALL, BET_LARGE,
+    FOLD, CHECK, CALL, BET_SMALL, BET_MED, BET_LARGE,
     discard_action_to_keep_pair, N_DISCARD_ACTIONS,
 )
 from network import make_betting_net, make_discard_net, get_policy_distribution
@@ -150,7 +150,7 @@ class PlayerAgent(Agent):
         probs /= probs.sum()
 
         action = int(np.random.choice(len(probs), p=probs))
-        self.last_action_was_bet = action in (BET_SMALL, BET_LARGE)
+        self.last_action_was_bet = action in (BET_SMALL, BET_MED, BET_LARGE)
         return self._to_gym(action, observation)
 
     # ── discard ───────────────────────────────────────────────────────────────
@@ -319,6 +319,8 @@ class PlayerAgent(Agent):
             ev_probs[CALL]  = equity * (pot + call_amt) - (1 - equity) * call_amt
         if mask[BET_SMALL] > 0:
             ev_probs[BET_SMALL] = equity * pot * 1.33
+        if mask[BET_MED] > 0:
+            ev_probs[BET_MED]   = equity * pot * 1.67
         if mask[BET_LARGE] > 0:
             ev_probs[BET_LARGE] = equity * pot * 2.0
 
@@ -342,8 +344,9 @@ class PlayerAgent(Agent):
             shift = min(0.25, (fold_rate - OPP_FOLD_THRESHOLD) * 1.5)
             transfer = shift * probs[CHECK]
             probs[CHECK]     -= transfer
-            probs[BET_SMALL] += transfer * 0.6
-            probs[BET_LARGE] += transfer * 0.4
+            probs[BET_SMALL] += transfer * 0.4
+            probs[BET_MED]   += transfer * 0.35
+            probs[BET_LARGE] += transfer * 0.25
         return probs
 
     # ── variance adjustment ───────────────────────────────────────────────────
@@ -363,7 +366,8 @@ class PlayerAgent(Agent):
         if mask[BET_SMALL] > 0 and mask[BET_LARGE] > 0:
             t = shift * probs[BET_SMALL] * 0.5
             probs[BET_SMALL] -= t
-            probs[BET_LARGE] += t
+            probs[BET_MED]   += t * 0.5
+            probs[BET_LARGE] += t * 0.5
         return probs
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -396,6 +400,11 @@ class PlayerAgent(Agent):
         elif action == BET_SMALL:
             if valid[at.RAISE.value]:
                 amt = int(np.clip(pot // 3, min_r, max_r))
+                return at.RAISE.value, amt, 0, 0
+            return at.CHECK.value, 0, 0, 0
+        elif action == BET_MED:
+            if valid[at.RAISE.value]:
+                amt = int(np.clip(2 * pot // 3, min_r, max_r))
                 return at.RAISE.value, amt, 0, 0
             return at.CHECK.value, 0, 0, 0
         elif action == BET_LARGE:

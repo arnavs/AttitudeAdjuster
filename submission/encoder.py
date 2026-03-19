@@ -22,12 +22,13 @@ Input vector layout (203 dims total):
   [201]     opp_bet           1 dim normalized
   [202]     is_discard_node   1 dim
 
-Betting actions (5):
+Betting actions (6):
   0: fold
   1: check
   2: call
-  3: bet_small
-  4: bet_large
+  3: bet_small  (~1/3 pot)
+  4: bet_med    (~2/3 pot)
+  5: bet_large  (all-in)
 
 Discard actions (10):
   index i -> KEEP_PAIRS[i], which is a (col1, col2) tuple of indices into hand5
@@ -47,7 +48,7 @@ N_DISCARDS  = 3
 INPUT_DIM = (N_HOLE + N_COMMUNITY + N_DISCARDS + N_DISCARDS) * CARD_DIM + 11
 # = 203
 
-N_BETTING_ACTIONS = 5
+N_BETTING_ACTIONS = 6
 N_DISCARD_ACTIONS = 10
 
 KEEP_PAIRS = list(combinations(range(5), 2))  # C(5,2) = 10
@@ -57,7 +58,8 @@ FOLD      = 0
 CHECK     = 1
 CALL      = 2
 BET_SMALL = 3
-BET_LARGE = 4
+BET_MED   = 4
+BET_LARGE = 5
 
 
 def encode_card(card_int):
@@ -134,15 +136,16 @@ def encode_infoset(observation, is_discard_node=False):
 
 def betting_mask(valid_actions):
     """
-    Build a 5-dim binary mask from gym valid_actions array.
+    Build a 6-dim binary mask from gym valid_actions array.
     Gym ActionType order: FOLD=0, RAISE=1, CHECK=2, CALL=3, DISCARD=4
-    Our order:           FOLD=0, CHECK=1, CALL=2, BET_SMALL=3, BET_LARGE=4
+    Our order:           FOLD=0, CHECK=1, CALL=2, BET_SMALL=3, BET_MED=4, BET_LARGE=5
     """
     mask = np.zeros(N_BETTING_ACTIONS, dtype=np.float32)
     mask[FOLD]      = float(valid_actions[0])  # FOLD
     mask[CHECK]     = float(valid_actions[2])  # CHECK
     mask[CALL]      = float(valid_actions[3])  # CALL
     mask[BET_SMALL] = float(valid_actions[1])  # RAISE
+    mask[BET_MED]   = float(valid_actions[1])  # RAISE
     mask[BET_LARGE] = float(valid_actions[1])  # RAISE
     return mask
 
@@ -150,13 +153,6 @@ def betting_mask(valid_actions):
 def discard_mask():
     """All 10 keep pairs are always legal at a discard node."""
     return np.ones(N_DISCARD_ACTIONS, dtype=np.float32)
-
-
-def keep_pair_to_discard_action(keep_idx_1, keep_idx_2):
-    """Convert (keep_idx_1, keep_idx_2) into discard action index [0..9]."""
-    pair = tuple(sorted([keep_idx_1, keep_idx_2]))
-    return KEEP_PAIRS.index(pair)
-
 
 def discard_action_to_keep_pair(action_idx):
     """Convert discard action index [0..9] to (keep_idx_1, keep_idx_2)."""

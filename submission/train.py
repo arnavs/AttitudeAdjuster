@@ -33,16 +33,17 @@ from traversal import run_traversal
 
 # ── hyperparameters ───────────────────────────────────────────────────────────
 N_ITERATIONS    = 50_000
-K_TRAVERSALS    = 4         # per iteration per player (one per core)
+K_TRAVERSALS    = 500         # per iteration per player (one per core)
 TRAIN_EVERY     = 10        # retrain value nets every N iterations
-VALUE_BUF_SIZE  = 500_000
+VALUE_BUF_SIZE  = 2_000_000
 STRAT_BUF_SIZE  = 2_000_000
 BATCH_SIZE      = 1024
-N_TRAIN_STEPS   = 200
+N_TRAIN_STEPS   = 400
 N_CORES         = 8
 LR              = 1e-3
-SAVE_EVERY      = 1000
+SAVE_EVERY      = 100
 SAVE_DIR        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
+WARM_CKPT       = None # os.path.join(SAVE_DIR, "old_start.pt")  # set to None to train from scratch
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -125,6 +126,14 @@ def train():
     for net in vb_nets + vd_nets + sb_nets + sd_nets:
         net.eval()
 
+    # warm-start value nets from a prior checkpoint if available
+    if WARM_CKPT and os.path.exists(WARM_CKPT):
+        ckpt = torch.load(WARM_CKPT, map_location=device, weights_only=True)
+        for p in [0, 1]:
+            vb_nets[p].load_state_dict(ckpt[f"vb_net_{p}"])
+            vd_nets[p].load_state_dict(ckpt[f"vd_net_{p}"])
+        print(f"Warm-started value nets from {WARM_CKPT}")
+
     vb_opts = [optim.Adam(n.parameters(), lr=LR) for n in vb_nets]
     vd_opts = [optim.Adam(n.parameters(), lr=LR) for n in vd_nets]
 
@@ -203,8 +212,12 @@ def train():
             if iteration % SAVE_EVERY == 0:
                 torch.save({
                     "iteration": iteration,
-                    "vb_0": vb_nets[0].state_dict(), "vb_1": vb_nets[1].state_dict(),
-                    "vd_0": vd_nets[0].state_dict(), "vd_1": vd_nets[1].state_dict(),
+                    "vb_net_0": vb_nets[0].state_dict(), "vb_net_1": vb_nets[1].state_dict(),
+                    "vd_net_0": vd_nets[0].state_dict(), "vd_net_1": vd_nets[1].state_dict(),
+                    "vb_buf_0": vb_bufs[0].buffer, "vb_buf_1": vb_bufs[1].buffer,
+                    "vd_buf_0": vd_bufs[0].buffer, "vd_buf_1": vd_bufs[1].buffer,
+                    "sb_buf_0": sb_bufs[0].buffer, "sb_buf_1": sb_bufs[1].buffer,
+                    "sd_buf_0": sd_bufs[0].buffer, "sd_buf_1": sd_bufs[1].buffer,
                 }, os.path.join(SAVE_DIR, f"checkpoint_{iteration}.pt"))
                 print(f"  saved checkpoint_{iteration}.pt")
 
