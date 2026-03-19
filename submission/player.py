@@ -142,14 +142,6 @@ class PlayerAgent(Agent):
     def _act_discard(self, observation):
         return self._heuristic_discard(observation)
 
-    def _bb_discard_probs(self, hand, flop):
-        """Look up BB's discard strategy from precomputed table."""
-        from solve_discard import canonical_hand_flop
-        key = canonical_hand_flop(tuple(sorted(hand)), tuple(sorted(flop)))
-        if self.bb_discard_table and key in self.bb_discard_table:
-            return self.bb_discard_table[key]
-        return np.ones(10) / 10
-
     def _bb_discard_prob_for_pair(self, h1, h2, opp_discs, community):
         """Probability that BB kept (h1, h2) from [h1, h2] + opp_discs."""
         from solve_discard import canonical_hand_flop_with_index
@@ -168,9 +160,14 @@ class PlayerAgent(Agent):
         keep_pairs = list(itertools.combinations(range(len(my_cards)), 2))
 
         if not we_are_sb:
-            # BB: table lookup
-            probs = self._bb_discard_probs(my_cards, community)
-            best_idx = int(np.argmax(probs))
+            # BB: table lookup with correct canonical index mapping
+            best_prob, best_idx = -1.0, 0
+            for idx, (ki, kj) in enumerate(keep_pairs):
+                k1, k2 = my_cards[ki], my_cards[kj]
+                discs = [my_cards[x] for x in range(len(my_cards)) if x != ki and x != kj]
+                prob = self._bb_discard_prob_for_pair(k1, k2, discs, community)
+                if prob > best_prob:
+                    best_prob, best_idx = prob, idx
         else:
             # SB level-2: equity weighted by BB's table probabilities
             dead = set(my_cards) | set(opp_discs) | set(community)
