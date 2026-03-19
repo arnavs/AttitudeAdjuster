@@ -12,10 +12,11 @@ Discard order:
 """
 
 import copy
+import itertools
 import numpy as np
 from encoder import (
     encode_infoset,
-    betting_mask, discard_mask,
+    betting_mask,
     KEEP_PAIRS, discard_action_to_keep_pair,
     FOLD, CHECK, CALL, BET_SMALL, BET_MED, BET_LARGE,
     N_BETTING_ACTIONS, N_DISCARD_ACTIONS,
@@ -259,10 +260,9 @@ class GameState:
 # ── traversal ─────────────────────────────────────────────────────────────────
 
 def traverse(state, traverser,
-             value_betting_nets, value_discard_nets,
-             strategy_betting_nets, strategy_discard_nets,
-             value_betting_buf, value_discard_buf,
-             strategy_betting_bufs, strategy_discard_bufs,
+             value_betting_nets,
+             value_betting_buf,
+             strategy_betting_bufs,
              iteration,
              reach_traverser=1.0, reach_opponent=1.0,
              device='cpu'):
@@ -285,13 +285,8 @@ def traverse(state, traverser,
             return _traverse_discard(
                 state, player=1, traverser=traverser,
                 value_betting_nets=value_betting_nets,
-                value_discard_nets=value_discard_nets,
-                strategy_betting_nets=strategy_betting_nets,
-                strategy_discard_nets=strategy_discard_nets,
                 value_betting_buf=value_betting_buf,
-                value_discard_buf=value_discard_buf,
                 strategy_betting_bufs=strategy_betting_bufs,
-                strategy_discard_bufs=strategy_discard_bufs,
                 iteration=iteration,
                 reach_traverser=reach_traverser,
                 reach_opponent=reach_opponent,
@@ -301,13 +296,8 @@ def traverse(state, traverser,
             return _traverse_discard(
                 state, player=0, traverser=traverser,
                 value_betting_nets=value_betting_nets,
-                value_discard_nets=value_discard_nets,
-                strategy_betting_nets=strategy_betting_nets,
-                strategy_discard_nets=strategy_discard_nets,
                 value_betting_buf=value_betting_buf,
-                value_discard_buf=value_discard_buf,
                 strategy_betting_bufs=strategy_betting_bufs,
-                strategy_discard_bufs=strategy_discard_bufs,
                 iteration=iteration,
                 reach_traverser=reach_traverser,
                 reach_opponent=reach_opponent,
@@ -342,10 +332,9 @@ def traverse(state, traverser,
                 s2.advance_street()
             action_values[action] = traverse(
                 s2, traverser,
-                value_betting_nets, value_discard_nets,
-                strategy_betting_nets, strategy_discard_nets,
-                value_betting_buf, value_discard_buf,
-                strategy_betting_bufs, strategy_discard_bufs,
+                value_betting_nets,
+                value_betting_buf,
+                strategy_betting_bufs,
                 iteration,
                 reach_traverser * strategy[action], reach_opponent,
                 device,
@@ -370,90 +359,134 @@ def traverse(state, traverser,
 
     return traverse(
         s2, traverser,
-        value_betting_nets, value_discard_nets,
-        strategy_betting_nets, strategy_discard_nets,
-        value_betting_buf, value_discard_buf,
-        strategy_betting_bufs, strategy_discard_bufs,
+        value_betting_nets,
+        value_betting_buf,
+        strategy_betting_bufs,
         iteration,
         reach_traverser, reach_opponent * strategy[action],
         device,
     )
 
 
+def _best_keep_by_rank(evaluator, five_cards, board_treys):
+    """Return (best_i, best_j) for strongest hand rank on this board."""
+    from gym_env import PokerEnv
+    best_rank, best_i, best_j = float('inf'), 0, 1
+    for i, j in itertools.combinations(range(5), 2):
+        rank = evaluator.evaluate(
+            [PokerEnv.int_to_card(five_cards[i]), PokerEnv.int_to_card(five_cards[j])],
+            board_treys)
+        if rank < best_rank:
+            best_rank, best_i, best_j = rank, i, j
+    return best_i, best_j
+
+
+def _best_discard_heuristic(state, player, n_samples=20):
+    """BB level-1 (vs SB's best pair), SB level-2 (rational filter on BB)."""
+    from gym_env import PokerEnv, WrappedEval
+    evaluator = WrappedEval()
+    hand = list(state.hole[player])
+    board = state.board()
+    board_treys = [PokerEnv.int_to_card(c) for c in board]
+    opp = 1 - player
+    n_remaining = 5 - len(board)
+
+    dead = set(board) | set(hand)
+    opp_discs = []
+    if state.discard_done[opp]:
+        opp_discs = list(state.discarded[opp])
+        dead |= set(opp_discs)
+
+    # player 0 = SB (discards second, sees BB discards)
+    is_sb = (player == 0)
+    can_infer = is_sb and len(opp_discs) == 3
+
+    best_action, best_equity = 0, -1.0
+
+    for action in range(N_DISCARD_ACTIONS):
+        ki, kj = discard_action_to_keep_pair(action)
+        k1, k2 = hand[ki], hand[kj]
+        my_disc_set = set(hand) - {k1, k2}
+        kept_dead = dead | my_disc_set
+        kept_pool = [c for c in range(27) if c not in kept_dead and c != k1 and c != k2]
+
+        wins, counted = 0.0, 0
+        for _ in range(n_samples):
+            if can_infer:
+                # SB level-2: sample 2 opp cards + board, filter by rational BB keep
+                if len(kept_pool) < 2 + n_remaining:
+                    break
+                sampled = np.random.choice(kept_pool, size=2 + n_remaining, replace=False)
+                r1, r2 = int(sampled[0]), int(sampled[1])
+                opp_full = [r1, r2] + opp_discs
+                bi, bj = _best_keep_by_rank(evaluator, opp_full, board_treys)
+                if (bi, bj) != (0, 1):
+                    continue
+                remaining_board = [int(c) for c in sampled[2:]]
+            else:
+                # BB level-1: sample SB's full 5 cards + board, SB keeps best pair
+                if len(kept_pool) < 5 + n_remaining:
+                    break
+                sampled = np.random.choice(kept_pool, size=5 + n_remaining, replace=False)
+                sb_hand = [int(c) for c in sampled[:5]]
+                si, sj = _best_keep_by_rank(evaluator, sb_hand, board_treys)
+                r1, r2 = sb_hand[si], sb_hand[sj]
+                remaining_board = [int(c) for c in sampled[5:]]
+
+            full_board = [PokerEnv.int_to_card(c) for c in board] + \
+                         [PokerEnv.int_to_card(int(c)) for c in remaining_board]
+            my_rank = evaluator.evaluate(
+                [PokerEnv.int_to_card(k1), PokerEnv.int_to_card(k2)], full_board)
+            opp_rank = evaluator.evaluate(
+                [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)], full_board)
+            if my_rank < opp_rank:
+                wins += 1.0
+            elif my_rank == opp_rank:
+                wins += 0.5
+            counted += 1
+
+        equity = wins / max(counted, 1)
+        if equity > best_equity:
+            best_equity = equity
+            best_action = action
+
+    return best_action
+
+
 def _traverse_discard(state, player, traverser,
-                      value_betting_nets, value_discard_nets,
-                      strategy_betting_nets, strategy_discard_nets,
-                      value_betting_buf, value_discard_buf,
-                      strategy_betting_bufs, strategy_discard_bufs,
+                      value_betting_nets,
+                      value_betting_buf,
+                      strategy_betting_bufs,
                       iteration,
                       reach_traverser, reach_opponent,
                       device):
-    """Handle a discard decision node."""
-    obs      = state.obs(player)
-    mask     = discard_mask()  # all 10 pairs legal
-    vec      = encode_infoset(obs, is_discard_node=True)
-    strategy = get_strategy(value_discard_nets[player], vec, mask, device)
-
-    is_traverser = (player == traverser)
-    strategy_discard_bufs[player].add(vec, strategy, iteration)
-
-    if is_traverser:
-        action_values = {}
-        for action in range(N_DISCARD_ACTIONS):
-            ki, kj = discard_action_to_keep_pair(action)
-            s2     = state.clone()
-            s2.apply_discard(player, ki, kj)
-            action_values[action] = traverse(
-                s2, traverser,
-                value_betting_nets, value_discard_nets,
-                strategy_betting_nets, strategy_discard_nets,
-                value_betting_buf, value_discard_buf,
-                strategy_betting_bufs, strategy_discard_bufs,
-                iteration,
-                reach_traverser * strategy[action], reach_opponent,
-                device,
-            )
-
-        node_value = sum(strategy[a] * action_values[a]
-                         for a in range(N_DISCARD_ACTIONS))
-
-        regrets = np.zeros(N_DISCARD_ACTIONS, dtype=np.float32)
-        for action in range(N_DISCARD_ACTIONS):
-            regrets[action] = reach_opponent * (action_values[action] - node_value)
-
-        value_discard_buf.add(vec, regrets, mask)
-        return node_value
-
-    action = int(np.random.choice(N_DISCARD_ACTIONS, p=strategy))
+    """Handle a discard decision node using heuristic best-equity discard."""
+    action = _best_discard_heuristic(state, player)
     ki, kj = discard_action_to_keep_pair(action)
-
     s2 = state.clone()
     s2.apply_discard(player, ki, kj)
     return traverse(
         s2, traverser,
-        value_betting_nets, value_discard_nets,
-        strategy_betting_nets, strategy_discard_nets,
-        value_betting_buf, value_discard_buf,
-        strategy_betting_bufs, strategy_discard_bufs,
+        value_betting_nets,
+        value_betting_buf,
+        strategy_betting_bufs,
         iteration,
-        reach_traverser, reach_opponent * strategy[action],
+        reach_traverser, reach_opponent,
         device,
     )
 
 
 def run_traversal(traverser,
-                  value_betting_nets, value_discard_nets,
-                  strategy_betting_nets, strategy_discard_nets,
-                  value_betting_buf, value_discard_buf,
-                  strategy_betting_bufs, strategy_discard_bufs,
+                  value_betting_nets,
+                  value_betting_buf,
+                  strategy_betting_bufs,
                   iteration, device='cpu'):
     """Run one complete traversal for the given traverser."""
     state = GameState()
     return traverse(
         state, traverser,
-        value_betting_nets, value_discard_nets,
-        strategy_betting_nets, strategy_discard_nets,
-        value_betting_buf, value_discard_buf,
-        strategy_betting_bufs, strategy_discard_bufs,
+        value_betting_nets,
+        value_betting_buf,
+        strategy_betting_bufs,
         iteration, device=device,
     )

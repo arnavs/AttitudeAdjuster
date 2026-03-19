@@ -3,7 +3,7 @@ import time
 import itertools
 import numpy as np
 from math import comb
-from agent import Agent
+from agents.agent import Agent
 from gym_env import PokerEnv, WrappedEval
 
 _PREFLOP_TABLE_PATH = os.path.join(os.path.dirname(__file__), "preflop_equity.npy")

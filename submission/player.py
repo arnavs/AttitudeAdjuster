@@ -15,16 +15,16 @@ import itertools
 import numpy as np
 import torch
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.agent import Agent
 from gym_env import PokerEnv, WrappedEval
 from encoder import (
-    encode_infoset, betting_mask, discard_mask,
+    encode_infoset, betting_mask,
     FOLD, CHECK, CALL, BET_SMALL, BET_MED, BET_LARGE,
-    discard_action_to_keep_pair,
 )
-from network import make_betting_net, make_discard_net, get_policy_distribution
+from network import make_betting_net, get_policy_distribution
 
 _CKPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 
@@ -39,23 +39,16 @@ class PlayerAgent(Agent):
         self.action_types = PokerEnv.ActionType
         self.evaluator    = WrappedEval()
 
-        # load strategy networks
+        # load strategy networks (betting only; discards use heuristic)
         self.bet_nets = {}
-        self.disc_nets = {}
         for p in [0, 1]:
             bn = make_betting_net()
-            dn = make_discard_net()
             bp = os.path.join(_CKPT_DIR, f"strategy_betting_p{p}_final.pt")
-            dp = os.path.join(_CKPT_DIR, f"strategy_discard_p{p}_final.pt")
             if not os.path.exists(bp):
                 raise FileNotFoundError(f"Betting net not found: {bp}")
-            if not os.path.exists(dp):
-                raise FileNotFoundError(f"Discard net not found: {dp}")
             bn.load_state_dict(torch.load(bp, map_location='cpu'))
-            dn.load_state_dict(torch.load(dp, map_location='cpu'))
-            bn.eval(); dn.eval()
-            self.bet_nets[p]  = bn
-            self.disc_nets[p] = dn
+            bn.eval()
+            self.bet_nets[p] = bn
 
         # match-level state
         self.cumulative_chips     = 0
@@ -139,29 +132,89 @@ class PlayerAgent(Agent):
     # ── discard ───────────────────────────────────────────────────────────────
 
     def _act_discard(self, observation):
-        position = observation["blind_position"]
-        vec      = encode_infoset(observation, is_discard_node=True)
-        mask     = discard_mask()
-        probs    = get_policy_distribution(self.disc_nets[position], vec, mask)
-        action   = int(np.argmax(probs))
-        ki, kj   = discard_action_to_keep_pair(action)
-        # sanity check: fall back if net's pick has terrible equity
-        my_cards  = [c for c in observation["my_cards"] if c != -1]
-        community = [c for c in observation["community_cards"] if c != -1]
-        if self._fast_equity(my_cards[ki], my_cards[kj], community, n=20) < 0.25:
-            return self._heuristic_discard(observation)
-        return self.action_types.DISCARD.value, 0, ki, kj
+        return self._heuristic_discard(observation)
+
+    def _best_keep_by_rank(self, five_cards, board_treys):
+        """Return (best_i, best_j) for strongest hand rank on this board. No MC."""
+        best_rank, best_i, best_j = float('inf'), 0, 1
+        for i, j in itertools.combinations(range(5), 2):
+            rank = self.evaluator.evaluate(
+                [PokerEnv.int_to_card(five_cards[i]), PokerEnv.int_to_card(five_cards[j])],
+                board_treys)
+            if rank < best_rank:
+                best_rank, best_i, best_j = rank, i, j
+        return best_i, best_j
+
+    def _keep_pair_equities(self, five_cards, community, extra_dead=None, n=10):
+        """Compute MC equity for all 10 keep-pairs from a 5-card hand."""
+        dead = set(five_cards)
+        if extra_dead:
+            dead |= extra_dead
+        equities = []
+        for i, j in itertools.combinations(range(5), 2):
+            eq = self._fast_equity(five_cards[i], five_cards[j], community, n=n, extra_dead=dead)
+            equities.append(eq)
+        return np.array(equities)
 
     def _heuristic_discard(self, observation):
-        """Fallback: keep the pair with highest flop equity."""
+        """BB level-1 (best pair vs SB's best pair), SB level-2 (rational filter on BB)."""
         my_cards  = [c for c in observation["my_cards"] if c != -1]
         community = [c for c in observation["community_cards"] if c != -1]
+        opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
+        board_treys = [PokerEnv.int_to_card(c) for c in community]
+        we_are_sb = observation["blind_position"] == 0
+        all_dead  = set(my_cards) | set(opp_discs) | set(community)
+        n_remaining = 5 - len(community)
+        n_samples = 40
+
         keep_pairs = list(itertools.combinations(range(len(my_cards)), 2))
-        best_eq, best_ki, best_kj = -1, 0, 1
+        best_eq, best_ki, best_kj = -1.0, 0, 1
+
         for ki, kj in keep_pairs:
-            eq = self._fast_equity(my_cards[ki], my_cards[kj], community, n=30)
+            k1, k2 = my_cards[ki], my_cards[kj]
+            my_disc_set = set(my_cards) - {k1, k2}
+            kept_dead = all_dead | my_disc_set
+            kept_pool = [c for c in range(27) if c not in kept_dead and c != k1 and c != k2]
+
+            wins, counted = 0.0, 0
+            for _ in range(n_samples):
+                if we_are_sb and len(opp_discs) == 3:
+                    # SB level-2: sample 2 opp cards + board, filter by rational BB keep
+                    if len(kept_pool) < 2 + n_remaining:
+                        break
+                    sampled = np.random.choice(kept_pool, size=2 + n_remaining, replace=False)
+                    r1, r2 = int(sampled[0]), int(sampled[1])
+                    opp_full = [r1, r2] + opp_discs
+                    bi, bj = self._best_keep_by_rank(opp_full, board_treys)
+                    if (bi, bj) != (0, 1):
+                        continue
+                    remaining_board = [int(c) for c in sampled[2:]]
+                else:
+                    # BB level-1: sample SB's full 5 cards + board, SB keeps best pair
+                    if len(kept_pool) < 5 + n_remaining:
+                        break
+                    sampled = np.random.choice(kept_pool, size=5 + n_remaining, replace=False)
+                    sb_hand = [int(c) for c in sampled[:5]]
+                    si, sj = self._best_keep_by_rank(sb_hand, board_treys)
+                    r1, r2 = sb_hand[si], sb_hand[sj]
+                    remaining_board = [int(c) for c in sampled[5:]]
+
+                board5 = community + remaining_board
+                board5_treys = [PokerEnv.int_to_card(c) for c in board5]
+                my_rank = self.evaluator.evaluate(
+                    [PokerEnv.int_to_card(k1), PokerEnv.int_to_card(k2)], board5_treys)
+                opp_rank = self.evaluator.evaluate(
+                    [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)], board5_treys)
+                if my_rank < opp_rank:
+                    wins += 1.0
+                elif my_rank == opp_rank:
+                    wins += 0.5
+                counted += 1
+
+            eq = wins / max(counted, 1)
             if eq > best_eq:
                 best_eq, best_ki, best_kj = eq, ki, kj
+
         return self.action_types.DISCARD.value, 0, best_ki, best_kj
 
     # ── posterior ─────────────────────────────────────────────────────────────
@@ -185,25 +238,17 @@ class PlayerAgent(Agent):
         community = [c for c in observation["community_cards"] if c != -1]
         opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
         DISCARD_TEMP = 6.0
-        KEEP_PAIRS = list(itertools.combinations(range(5), 2))
 
         my_discs  = set(c for c in observation["my_discarded_cards"] if c != -1)
         we_are_bb = observation["blind_position"] == 1
-        # SB discards after seeing BB's discards; BB discards first (blind)
         opp_is_sb = we_are_bb
 
         for i, (h1, h2) in enumerate(self.opp_pairs):
             if self.opp_weights[i] < 1e-9:
                 continue
             full_hand = [h1, h2] + opp_discs
-            dead = set(full_hand)
-            if opp_is_sb:
-                dead |= my_discs
-            equities = []
-            for ki, kj in KEEP_PAIRS:
-                k1, k2 = full_hand[ki], full_hand[kj]
-                equities.append(self._fast_equity(k1, k2, community, n=20, extra_dead=dead))
-            equities = np.array(equities)
+            extra_dead = my_discs if opp_is_sb else None
+            equities = self._keep_pair_equities(full_hand, community, extra_dead=extra_dead, n=20)
             log_probs = DISCARD_TEMP * equities
             log_probs -= log_probs.max()
             probs = np.exp(log_probs)

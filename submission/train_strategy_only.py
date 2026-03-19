@@ -18,7 +18,7 @@ LR         = 1e-3
 device     = 'cpu'
 
 print(f"Loading checkpoint: {CKPT_PATH}")
-ckpt = torch.load(CKPT_PATH, map_location=device)
+ckpt = torch.load(CKPT_PATH, map_location=device, weights_only=False)
 
 for p in [0, 1]:
     for tag, net_fn, buf_key in [
