@@ -15,3 +15,8 @@ def _apply_opp_model(self, probs, mask):
             probs[BET_MED]   += transfer * 0.35
             probs[BET_LARGE] += transfer * 0.25
         return probs
+
+import torch, sys
+ckpt = torch.load(sys.argv[1], map_location='cpu')
+stripped = {k: v for k, v in ckpt.items() if not k.startswith(('sb_', 'sd_', 'vb_buf', 'vd_buf'))}
+torch.save(stripped, sys.argv[1].replace('.pt', '_slim.pt'))

@@ -110,7 +110,7 @@ print("PASS: SB discard matches env state")
 
 # raise semantics: BET_SMALL must behave like gym raise_amount, not as raw chip contribution
 max_raise = state.max_raise_amount()
-small_raise, _ = compute_bet_sizes(state.pot, max_raise, state.min_raise)
+small_raise, _, _ = compute_bet_sizes(state.pot, max_raise, state.min_raise)
 old_bets = list(state.bets)
 obs, reward, terminated, info = step_both(
     state,

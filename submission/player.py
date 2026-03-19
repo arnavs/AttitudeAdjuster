@@ -66,7 +66,7 @@ class PlayerAgent(Agent):
         self.hand_start     = None
         self.opp_pairs      = None
         self.opp_weights    = None
-        self.zeroed_streets = set()
+        self.zeroed_streets   = set()
 
     def __name__(self):
         return "PlayerAgent"
@@ -95,7 +95,7 @@ class PlayerAgent(Agent):
             self.hand_start     = time.time()
             self.opp_pairs      = None
             self.opp_weights    = None
-            self.zeroed_streets = set()
+            self.zeroed_streets   = set()
 
         # layer 1: foldout heuristic
         if self.cumulative_chips > FOLDOUT_RATIO * hands_remaining:
@@ -409,15 +409,21 @@ class PlayerAgent(Agent):
             if valid[at.RAISE.value]:
                 amt = int(np.clip(pot // 3, min_r, max_r))
                 return at.RAISE.value, amt, 0, 0
+            if valid[at.CALL.value]:
+                return at.CALL.value, 0, 0, 0
             return at.CHECK.value, 0, 0, 0
         elif action == BET_MED:
             if valid[at.RAISE.value]:
                 amt = int(np.clip(2 * pot // 3, min_r, max_r))
                 return at.RAISE.value, amt, 0, 0
+            if valid[at.CALL.value]:
+                return at.CALL.value, 0, 0, 0
             return at.CHECK.value, 0, 0, 0
         elif action == BET_LARGE:
             if valid[at.RAISE.value]:
                 amt = int(np.clip(max_r, min_r, max_r))
                 return at.RAISE.value, amt, 0, 0
+            if valid[at.CALL.value]:
+                return at.CALL.value, 0, 0, 0
             return at.CHECK.value, 0, 0, 0
         return self._safe_action(observation)
