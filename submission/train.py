@@ -35,8 +35,10 @@ from traversal import run_traversal
 N_ITERATIONS    = 50_000
 K_TRAVERSALS    = 100         # per iteration per player (one per core)
 TRAIN_EVERY     = 10        # retrain value nets every N iterations
-VALUE_BUF_SIZE  = 1_000_000
-STRAT_BUF_SIZE  = 1_000_000
+VALUE_BET_BUF   = 1_500_000
+VALUE_DISC_BUF  = 200_000
+STRAT_BET_BUF   = 1_500_000
+STRAT_DISC_BUF  = 200_000
 BATCH_SIZE      = 1024
 N_TRAIN_STEPS   = 400
 N_CORES         = 8
@@ -137,10 +139,10 @@ def train():
     vb_opts = [optim.Adam(n.parameters(), lr=LR) for n in vb_nets]
     vd_opts = [optim.Adam(n.parameters(), lr=LR) for n in vd_nets]
 
-    vb_bufs = [ReservoirBuffer(VALUE_BUF_SIZE), ReservoirBuffer(VALUE_BUF_SIZE)]
-    vd_bufs = [ReservoirBuffer(VALUE_BUF_SIZE), ReservoirBuffer(VALUE_BUF_SIZE)]
-    sb_bufs = [StrategyBuffer(STRAT_BUF_SIZE),  StrategyBuffer(STRAT_BUF_SIZE)]
-    sd_bufs = [StrategyBuffer(STRAT_BUF_SIZE),  StrategyBuffer(STRAT_BUF_SIZE)]
+    vb_bufs = [ReservoirBuffer(VALUE_BET_BUF), ReservoirBuffer(VALUE_BET_BUF)]
+    vd_bufs = [ReservoirBuffer(VALUE_DISC_BUF), ReservoirBuffer(VALUE_DISC_BUF)]
+    sb_bufs = [StrategyBuffer(STRAT_BET_BUF),  StrategyBuffer(STRAT_BET_BUF)]
+    sd_bufs = [StrategyBuffer(STRAT_DISC_BUF),  StrategyBuffer(STRAT_DISC_BUF)]
 
     writer = SummaryWriter(log_dir=os.path.join(SAVE_DIR, "runs"))
 
