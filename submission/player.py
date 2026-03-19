@@ -143,18 +143,26 @@ class PlayerAgent(Agent):
         return self._heuristic_discard(observation)
 
     def _bb_discard_probs(self, hand, flop):
-        """Look up BB's discard strategy from precomputed table."""
-        from solve_discard import canonical_hand_flop
-        key = canonical_hand_flop(tuple(sorted(hand)), tuple(sorted(flop)))
-        if self.bb_discard_table and key in self.bb_discard_table:
-            return self.bb_discard_table[key]
-        return np.ones(10) / 10
+        """Return BB discard probabilities aligned to the current hand order."""
+        from solve_discard import canonical_hand_flop_with_keep_pair
+
+        hand = tuple(hand)
+        flop = tuple(flop[:3])
+        runtime_probs = np.ones(10, dtype=np.float64) / 10.0
+        if not self.bb_discard_table:
+            return runtime_probs
+
+        for idx, (keep_i, keep_j) in enumerate(itertools.combinations(range(len(hand)), 2)):
+            bb_key, kp_idx = canonical_hand_flop_with_keep_pair(hand, flop, keep_i, keep_j)
+            if bb_key in self.bb_discard_table:
+                runtime_probs[idx] = self.bb_discard_table[bb_key][kp_idx]
+        return runtime_probs
 
     def _bb_discard_prob_for_pair(self, h1, h2, opp_discs, community):
         """Probability that BB kept (h1, h2) from [h1, h2] + opp_discs."""
         from solve_discard import canonical_hand_flop_with_index
         bb_full = [h1, h2] + list(opp_discs)
-        bb_key, kp_idx = canonical_hand_flop_with_index(tuple(bb_full), tuple(community))
+        bb_key, kp_idx = canonical_hand_flop_with_index(tuple(bb_full), tuple(community[:3]))
         if self.bb_discard_table and bb_key in self.bb_discard_table:
             return self.bb_discard_table[bb_key][kp_idx]
         return 0.1
@@ -228,6 +236,9 @@ class PlayerAgent(Agent):
 
     def _update_posterior_discard(self, observation):
         """Weight by BB's table probability of keeping each candidate pair."""
+        if observation["blind_position"] != 0:
+            return
+
         opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
         community = [c for c in observation["community_cards"] if c != -1]
 
