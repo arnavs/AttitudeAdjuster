@@ -41,7 +41,7 @@ BATCH_SIZE      = 1024
 N_TRAIN_STEPS   = 400
 N_CORES         = 8
 LR              = 1e-3
-SAVE_EVERY      = 10
+SAVE_EVERY      = 50
 SAVE_DIR        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 WARM_CKPT       = None # os.path.join(SAVE_DIR, "old_start.pt")  # set to None to train from scratch
 

@@ -273,13 +273,8 @@ def traverse(state, traverser,
     if state.terminal:
         return state.payoff(traverser)
 
-    # both all-in: run out remaining streets to showdown
-    if state.stacks[0] == 0 and state.stacks[1] == 0:
-        # if discards haven't happened yet, do them randomly
-        if state.street <= 1:
-            for p in [1, 0]:
-                if not state.discard_done[p]:
-                    state.apply_discard(p, 0, 1)
+    # both all-in post-discard: run out remaining streets to showdown
+    if state.stacks[0] == 0 and state.stacks[1] == 0 and all(state.discard_done):
         while state.street <= 3 and not state.terminal:
             state.advance_street()
         return state.payoff(traverser)
