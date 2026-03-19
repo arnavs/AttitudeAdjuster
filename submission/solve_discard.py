@@ -33,23 +33,6 @@ N_CARDS = 27
 TEMP = 6.0
 N_CORES = 8
 
-
-def canonical_hand_flop(hand, flop):
-    """Canonical form for (hand, flop) under suit permutation."""
-    ranks_h = [c % 9 for c in hand]
-    suits_h = [c // 9 for c in hand]
-    ranks_f = [c % 9 for c in flop]
-    suits_f = [c // 9 for c in flop]
-    best = None
-    for perm in permutations(range(3)):
-        mapped_hand = tuple(sorted(ranks_h[i] + perm[suits_h[i]] * 9 for i in range(5)))
-        mapped_flop = tuple(sorted(ranks_f[i] + perm[suits_f[i]] * 9 for i in range(3)))
-        key = (mapped_hand, mapped_flop)
-        if best is None or key < best:
-            best = key
-    return best
-
-
 def canonical_hand_flop_with_index(hand, flop):
     """Canonical key + which keep-pair index positions 0,1 of hand map to."""
     ranks_h = [c % 9 for c in hand]
@@ -59,54 +42,46 @@ def canonical_hand_flop_with_index(hand, flop):
     best = None
     best_unsorted = None
     for perm in permutations(range(3)):
+        # apply the suit permutation
         unsorted = [ranks_h[i] + perm[suits_h[i]] * 9 for i in range(5)]
+        # sort it 
         mapped_hand = tuple(sorted(unsorted))
         mapped_flop = tuple(sorted(ranks_f[i] + perm[suits_f[i]] * 9 for i in range(3)))
+        # store the key
         key = (mapped_hand, mapped_flop)
         if best is None or key < best:
             best = key
             best_unsorted = unsorted
 
+    # sorted version of best suit permutation 
     sorted_hand = sorted(best_unsorted)
-    card0 = best_unsorted[0]
-    card1 = best_unsorted[1]
-    pos0 = sorted_hand.index(card0)
-    # handle duplicate cards: if card0 == card1, pos1 must differ
-    pos1 = sorted_hand.index(card1) if card1 != card0 else pos0 + 1
-    if card1 != card0:
-        pos1 = sorted_hand.index(card1)
+    card0 = best_unsorted[0] # suit-permuted version of card 0
+    card1 = best_unsorted[1] # suit-permuted version of card 1
+    pos0 = sorted_hand.index(card0) # CANONICAL POSITION
+    pos1 = sorted_hand.index(card1) 
     if pos0 > pos1:
-        pos0, pos1 = pos1, pos0
+        pos0, pos1 = pos1, pos0 # KEEP_PAIRS requires monotonicity
     kp_idx = KEEP_PAIRS.index((pos0, pos1))
-    return best, kp_idx
-
-
-def canonical_hand_flop_with_keep_pair(hand, flop, keep_i, keep_j):
-    """Canonical key + canonical keep-pair slot for hand indices keep_i, keep_j."""
-    ordered_hand = [hand[keep_i], hand[keep_j]]
-    ordered_hand.extend(hand[idx] for idx in range(5) if idx != keep_i and idx != keep_j)
-    return canonical_hand_flop_with_index(tuple(ordered_hand), flop)
-
+    return best, kp_idx # KEEP_PAIRS is a scalar
 
 def sb_best_keep(evaluator, sb_hand, flop, sb_known_dead, bb_table=None, bb_discs=None, n=4):
     """SB picks best keep-pair by equity. If bb_table exists, weight by BB's keep probs."""
     dead = sb_known_dead | set(sb_hand)
     live = [c for c in range(N_CARDS) if c not in dead]
-    n_remaining = 5 - len(flop)
-
     best_eq, best_i, best_j = -1.0, 0, 1
     for i, j in KEEP_PAIRS:
         k1, k2 = sb_hand[i], sb_hand[j]
         wins, total_w = 0.0, 0.0
         for _ in range(n):
-            if len(live) < 2 + n_remaining:
-                break
-            sampled = np.random.choice(live, size=2 + n_remaining, replace=False)
+            # draw turn, river, and BB holes
+            sampled = np.random.choice(live, size=4, replace=False)
             r1, r2 = int(sampled[0]), int(sampled[1])
 
             w = 1.0
             if bb_table is not None and bb_discs is not None:
+                # initialize BB hand
                 bb_full = [r1, r2] + list(bb_discs)
+                # BB's problem key and keep index
                 bb_key, kp_idx = canonical_hand_flop_with_index(tuple(bb_full), tuple(flop))
                 if bb_key in bb_table:
                     w = bb_table[bb_key][kp_idx]
@@ -127,35 +102,33 @@ def sb_best_keep(evaluator, sb_hand, flop, sb_known_dead, bb_table=None, bb_disc
         eq = wins / max(total_w, 1e-9)
         if eq > best_eq:
             best_eq, best_i, best_j = eq, i, j
-    return best_i, best_j
+    return best_i, best_j # raw indices
 
 
 def compute_bb_values(evaluator, hand, flop, bb_table=None, n_samples=5):
     """Compute equity for each BB keep-pair against SB's best response."""
-    n_remaining = 5 - len(flop)
 
     values = np.zeros(len(KEEP_PAIRS), dtype=np.float64)
     seen_slots = np.zeros(len(KEEP_PAIRS), dtype=bool)
-    for ki, kj in KEEP_PAIRS:
+    for idx, (ki, kj) in enumerate(KEEP_PAIRS):
         k1, k2 = hand[ki], hand[kj]
-        bb_discards = [hand[x] for x in range(5) if x != ki and x != kj]
+        bb_discards = [hand[x] for x in range(5) if x != ki and x != kj] # raw cards
 
         # physical pool: SB can't have BB's cards (all 5) or flop cards
-        sample_pool = [c for c in range(N_CARDS) if c not in set(hand) | set(flop)]
+        sample_pool = [c for c in range(N_CARDS) if c not in set(hand) | set(flop)] # raw cards
 
         # SB's knowledge: only BB's discards + flop are known dead
-        sb_known_dead = set(flop) | set(bb_discards)
+        sb_known_dead = set(flop) | set(bb_discards) # raw cards
 
         wins, counted = 0.0, 0
         for _ in range(n_samples):
-            if len(sample_pool) < 5 + n_remaining:
-                break
-            sampled = np.random.choice(sample_pool, size=5 + n_remaining, replace=False)
-            sb_hand = [int(c) for c in sampled[:5]]
+            # full SB hand + (river, turn)
+            sampled = np.random.choice(sample_pool, size=7, replace=False) # raw cards
+            sb_hand = [int(c) for c in sampled[:5]] # raw cards
 
             si, sj = sb_best_keep(evaluator, sb_hand, flop, sb_known_dead,
-                                  bb_table=bb_table, bb_discs=bb_discards, n=4)
-            r1, r2 = sb_hand[si], sb_hand[sj]
+                                  bb_table=bb_table, bb_discs=bb_discards, n=4) # raw indices
+            r1, r2 = sb_hand[si], sb_hand[sj] # raw cards
 
             remaining_board = [int(c) for c in sampled[5:]]
             board5 = list(flop) + remaining_board
@@ -169,12 +142,8 @@ def compute_bb_values(evaluator, hand, flop, bb_table=None, n_samples=5):
             elif my_rank == opp_rank:
                 wins += 0.5
             counted += 1
-        _, kp_idx = canonical_hand_flop_with_keep_pair(hand, flop, ki, kj)
-        values[kp_idx] = wins / max(counted, 1)
-        seen_slots[kp_idx] = True
-
-    assert seen_slots.all(), f"Expected keep-pair remapping to cover all slots, got {seen_slots}"
-    return values
+        values[idx] = wins / max(counted, 1) # raw indices
+    return values # raw value vector
 
 
 def _worker(args):
@@ -222,7 +191,7 @@ def run_iteration(bb_table=None, n_samples=5):
     for hand in combinations(range(N_CARDS), 5):
         remaining = [c for c in range(N_CARDS) if c not in hand]
         for flop in combinations(remaining, 3):
-            key = canonical_hand_flop(hand, flop)
+            key = canonical_hand_flop_with_index(hand, flop)[0]
             if key not in seen_keys:
                 seen_keys[key] = (hand, flop)
             count += 1
