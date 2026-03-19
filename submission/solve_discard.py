@@ -195,7 +195,15 @@ def _worker(args):
     results = {}
     for key, (hand, flop) in keys_and_reps:
         values = compute_bb_values(evaluator, hand, flop, bb_table=bb_table, n_samples=n_samples)
-        logits = TEMP * values
+        # remap from representative-hand order to canonical-sorted order
+        canonical_values = np.zeros(10, dtype=np.float64)
+        for orig_idx, (ki, kj) in enumerate(KEEP_PAIRS):
+            kept = [hand[ki], hand[kj]]
+            discs = [hand[x] for x in range(5) if x != ki and x != kj]
+            full = list(kept) + list(discs)
+            _, canon_idx = canonical_hand_flop_with_index(tuple(full), tuple(flop))
+            canonical_values[canon_idx] = values[orig_idx]
+        logits = TEMP * canonical_values
         logits -= logits.max()
         probs = np.exp(logits)
         probs /= probs.sum()
