@@ -21,6 +21,8 @@ from encoder import (
     N_BETTING_ACTIONS, N_DISCARD_ACTIONS,
 )
 from network import get_strategy
+from solve_discard import TEMP, lookup_bb_prob, lookup_bb_probs
+from gym_env import PokerEnv, WrappedEval
 
 
 # ── bet sizing ────────────────────────────────────────────────────────────────
@@ -222,7 +224,6 @@ class GameState:
         return False
 
     def _resolve_showdown(self):
-        from gym_env import PokerEnv, WrappedEval
         evaluator = WrappedEval()
         board5    = [PokerEnv.int_to_card(c) for c in self.community[:5]]
         h0 = [PokerEnv.int_to_card(c) for c in self.hole[0] if c != -1]
@@ -368,18 +369,14 @@ def traverse(state, traverser,
 
 
 # FROM SB's PERSPECTIVE
-def _bb_discard_prob(bb_table, h1, h2, opp_discs, board):
+def _bb_discard_prob(bb_table, evaluator, h1, h2, opp_discs, board):
     """Look up probability that BB kept (h1, h2) from [h1, h2] + opp_discs."""
-    from solve_discard import canonical_hand_flop_with_index
     bb_full = [h1, h2] + list(opp_discs)
-    bb_key, kp_idx = canonical_hand_flop_with_index(tuple(bb_full), tuple(board[:3]))
-    return bb_table[bb_key][kp_idx]
+    return lookup_bb_prob(bb_table, evaluator, bb_full, board[:3], 0)
 
 
 def _best_discard_heuristic(state, player, bb_table, n_samples=20):
     """BB: sample from table strategy. SB: table-weighted equity."""
-    from gym_env import PokerEnv, WrappedEval
-    from solve_discard import canonical_hand_flop_with_index
     evaluator = WrappedEval()
     hand = list(state.hole[player])
     board = state.board()
@@ -394,20 +391,14 @@ def _best_discard_heuristic(state, player, bb_table, n_samples=20):
 
     if not is_sb:
         # BB: sample from table strategy directly
-        probs = np.zeros(N_DISCARD_ACTIONS, dtype=np.float64)
-        for idx, (ki, kj) in enumerate(KEEP_PAIRS):
-            kept = [hand[ki], hand[kj]]
-            discs = [hand[x] for x in range(5) if x != ki and x != kj]
-            full = list(kept) + list(discs)
-            bb_key, kp_idx = canonical_hand_flop_with_index(tuple(full), tuple(board[:3]))
-            probs[idx] = bb_table[bb_key][kp_idx]
+        probs = lookup_bb_probs(bb_table, evaluator, hand, board[:3])
         probs /= probs.sum()
         return int(np.random.choice(N_DISCARD_ACTIONS, p=probs))
 
-    # SB: weighted by BB's table probabilities
+    # SB: weighted by BB's table probabilities, softmax over equities
     dead = set(board) | set(hand) | set(opp_discs)
     pool = [c for c in range(27) if c not in dead]
-    best_action, best_value = 0, -1.0
+    equities = np.zeros(N_DISCARD_ACTIONS, dtype=np.float64)
 
     for action in range(N_DISCARD_ACTIONS):
         ki, kj = discard_action_to_keep_pair(action)
@@ -419,7 +410,7 @@ def _best_discard_heuristic(state, player, bb_table, n_samples=20):
             sampled = np.random.choice(pool, size=2 + n_remaining, replace=False)
             r1, r2 = int(sampled[0]), int(sampled[1])
 
-            weight = _bb_discard_prob(bb_table, r1, r2, opp_discs, board)
+            weight = _bb_discard_prob(bb_table, evaluator, r1, r2, opp_discs, board)
             if weight < 1e-9:
                 continue
 
@@ -434,11 +425,13 @@ def _best_discard_heuristic(state, player, bb_table, n_samples=20):
             weighted_wins += weight * outcome
             total_weight += weight
 
-        value = weighted_wins / max(total_weight, 1e-9)
-        if value > best_value:
-            best_value = value
-            best_action = action
-    return best_action
+        equities[action] = weighted_wins / max(total_weight, 1e-9)
+
+    logits = TEMP * equities
+    logits -= logits.max()
+    probs = np.exp(logits)
+    probs /= probs.sum()
+    return int(np.random.choice(N_DISCARD_ACTIONS, p=probs))
 
 
 def _traverse_discard(state, player, traverser,

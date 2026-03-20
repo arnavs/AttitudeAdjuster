@@ -26,7 +26,7 @@ from encoder import (
     KEEP_PAIRS, N_DISCARD_ACTIONS,
 )
 from network import make_betting_net, get_policy_distribution
-from solve_discard import canonical_hand_flop_with_index
+from solve_discard import lookup_bb_prob, lookup_bb_probs, TEMP
 
 _CKPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 
@@ -148,8 +148,7 @@ class PlayerAgent(Agent):
         """Probability that BB kept (h1, h2) from [h1, h2] + opp_discs."""
 
         bb_full = [h1, h2] + list(opp_discs)
-        bb_key, kp_idx = canonical_hand_flop_with_index(tuple(bb_full), tuple(community[:3]))
-        return self.bb_discard_table[bb_key][kp_idx]
+        return lookup_bb_prob(self.bb_discard_table, self.evaluator, bb_full, community[:3], 0)
 
     def _heuristic_discard(self, observation):
         """BB samples from table strategy. SB pure best-responds via table-weighted equity."""
@@ -163,24 +162,18 @@ class PlayerAgent(Agent):
 
         if not we_are_sb:
             # BB: sample from table strategy
-            probs = np.zeros(N_DISCARD_ACTIONS, dtype=np.float64)
-            for idx, (ki, kj) in enumerate(KEEP_PAIRS):
-                kept = [my_cards[ki], my_cards[kj]]
-                discs = [my_cards[x] for x in range(5) if x != ki and x != kj]
-                full = list(kept) + list(discs)
-                bb_key, kp_idx = canonical_hand_flop_with_index(tuple(full), tuple(community[:3]))
-                probs[idx] = self.bb_discard_table[bb_key][kp_idx]
+            probs = lookup_bb_probs(self.bb_discard_table, self.evaluator, my_cards, community[:3])
             probs /= probs.sum()
             action = int(np.random.choice(N_DISCARD_ACTIONS, p=probs))
             best_ki, best_kj = KEEP_PAIRS[action]
         else:
-            # SB: equity weighted by BB's table probabilities
+            # SB: equity weighted by BB's table probabilities, softmax over equities
             dead = set(my_cards) | set(opp_discs) | set(community)
             pool = [c for c in range(27) if c not in dead]
             n_remaining = 5 - len(community)
             n_samples = 24
 
-            best_eq, best_idx = -1.0, 0
+            equities = np.zeros(N_DISCARD_ACTIONS, dtype=np.float64)
             for idx, (ki, kj) in enumerate(KEEP_PAIRS):
                 k1, k2 = my_cards[ki], my_cards[kj]
                 weighted_wins, total_weight = 0.0, 0.0
@@ -203,9 +196,13 @@ class PlayerAgent(Agent):
                     weighted_wins += weight * outcome
                     total_weight += weight
 
-                eq = weighted_wins / max(total_weight, 1e-9)
-                if eq > best_eq:
-                    best_eq, best_idx = eq, idx
+                equities[idx] = weighted_wins / max(total_weight, 1e-9)
+
+            logits = TEMP * equities
+            logits -= logits.max()
+            probs = np.exp(logits)
+            probs /= probs.sum()
+            best_idx = int(np.random.choice(N_DISCARD_ACTIONS, p=probs))
             best_ki, best_kj = KEEP_PAIRS[best_idx]
 
         return self.action_types.DISCARD.value, 0, best_ki, best_kj
