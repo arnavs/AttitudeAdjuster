@@ -1,10 +1,9 @@
 """
 Deep CFR training loop.
 
-Networks:
-  value_betting_net   - single shared net, trained every TRAIN_EVERY iters on
-                        regret samples from both players (position encoded in input)
-  strategy_betting_net - one per player, trained once at end on strategy samples
+Networks (per player):
+  value_betting_net   - trained every TRAIN_EVERY iters on betting regret samples
+  strategy_betting_net - trained once at end on betting strategy samples
 
 Discards are handled by a heuristic (best-equity keep-pair), not learned.
 
@@ -32,12 +31,15 @@ from network import (
     train_value_network, train_strategy_network,
 )
 from traversal import run_traversal
+from encoder import FOLD
+
+# position feature is the first scalar after card encodings
 
 # ── hyperparameters ───────────────────────────────────────────────────────────
 N_ITERATIONS    = 50_000
 K_TRAVERSALS    = 100         # per iteration per player (one per core)
 TRAIN_EVERY     = 10        # retrain value nets every N iterations
-VALUE_BET_BUF   = 1_500_000
+VALUE_BET_BUF   = 2_500_000
 STRAT_BET_BUF   = 1_500_000
 BATCH_SIZE      = 1024
 N_TRAIN_STEPS   = 400
@@ -54,7 +56,7 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 def _worker(args):
     """Run one traversal in a subprocess. Returns buffer contents."""
-    (traverser, iteration, vb_state) = args
+    (traverser, iteration, vb_states) = args
 
     import sys, os
     submission_dir = os.path.dirname(os.path.abspath(__file__))
@@ -66,10 +68,9 @@ def _worker(args):
     from network import make_betting_net, ReservoirBuffer, StrategyBuffer
     from traversal import run_traversal
 
-    vb_net = make_betting_net()
-    vb_net.load_state_dict(vb_state)
-    vb_net.eval()
-    vb_nets = [vb_net, vb_net]  # same net for both positions
+    vb_nets = []
+    for p in [0, 1]:
+        vb_net = make_betting_net(); vb_net.load_state_dict(vb_states[p]); vb_net.eval(); vb_nets.append(vb_net)
 
     vb_buf = ReservoirBuffer(10_000)
     sb_bufs = [StrategyBuffer(10_000), StrategyBuffer(10_000)]
@@ -106,18 +107,20 @@ def _merge(main_buf, new_items):
 def train():
     device = 'cpu'
 
-    vb_net = make_betting_net().to(device)
-    vb_net.eval()
+    vb_nets = [make_betting_net().to(device), make_betting_net().to(device)]
+    for net in vb_nets:
+        net.eval()
 
-    # warm-start value net from a prior checkpoint if available
+    # warm-start value nets from a prior checkpoint if available
     if WARM_CKPT and os.path.exists(WARM_CKPT):
         ckpt = torch.load(WARM_CKPT, map_location=device, weights_only=True)
-        vb_net.load_state_dict(ckpt["vb_net"])
-        print(f"Warm-started value net from {WARM_CKPT}")
+        for p in [0, 1]:
+            vb_nets[p].load_state_dict(ckpt[f"vb_net_{p}"])
+        print(f"Warm-started value nets from {WARM_CKPT}")
 
-    vb_opt = optim.Adam(vb_net.parameters(), lr=LR)
+    vb_opts = [optim.Adam(n.parameters(), lr=LR) for n in vb_nets]
 
-    vb_buf = ReservoirBuffer(VALUE_BET_BUF)
+    vb_bufs = [ReservoirBuffer(VALUE_BET_BUF), ReservoirBuffer(VALUE_BET_BUF)]
     sb_bufs = [StrategyBuffer(STRAT_BET_BUF),  StrategyBuffer(STRAT_BET_BUF)]
 
     writer = SummaryWriter(log_dir=os.path.join(SAVE_DIR, "runs"))
@@ -134,29 +137,53 @@ def train():
 
             for traverser in [0, 1]:
                 jobs = [
-                    (traverser, iteration, vb_net.state_dict())
+                    (traverser, iteration,
+                     [vb_nets[0].state_dict(), vb_nets[1].state_dict()])
                     for _ in range(K_TRAVERSALS)
                 ]
                 results = pool.map(_worker, jobs)
 
                 for (_, vb_items, sb0_items, sb1_items) in results:
-                    _merge(vb_buf, vb_items)
+                    _merge(vb_bufs[traverser], vb_items)
                     _merge(sb_bufs[0], sb0_items)
                     _merge(sb_bufs[1], sb1_items)
 
-            # retrain value network
+            # retrain value networks
             if iteration % TRAIN_EVERY == 0:
-                if len(vb_buf) >= BATCH_SIZE:
-                    vb_net = make_betting_net().to(device)
-                    vb_opt = optim.Adam(vb_net.parameters(), lr=LR)
-                    vb_loss = train_value_network(vb_net, vb_buf, vb_opt,
-                                        BATCH_SIZE, N_TRAIN_STEPS, device)
-                    vb_net.eval()
-                    if vb_loss is not None:
-                        writer.add_scalar("loss/value_betting", vb_loss, iteration)
-
-                writer.add_scalar("buffer/vb", len(vb_buf), iteration)
                 for p in [0, 1]:
+                    if len(vb_bufs[p]) >= BATCH_SIZE:
+                        vb_nets[p] = make_betting_net().to(device)
+                        vb_opts[p] = optim.Adam(vb_nets[p].parameters(), lr=LR)
+                        vb_loss = train_value_network(vb_nets[p], vb_bufs[p], vb_opts[p],
+                                            BATCH_SIZE, N_TRAIN_STEPS, device)
+                        vb_nets[p].eval()
+                        if vb_loss is not None:
+                            writer.add_scalar(f"loss/value_betting_p{p}", vb_loss, iteration)
+
+                # ── diagnostics ──
+                for p, label in [(0, "SB"), (1, "BB")]:
+                    if len(vb_bufs[p]) >= BATCH_SIZE:
+                        vecs, advs, masks = vb_bufs[p].sample(min(len(vb_bufs[p]), 10_000))
+
+                        # 1. loss per position
+                        with torch.no_grad():
+                            x = torch.tensor(vecs, dtype=torch.float32, device=device)
+                            pred = vb_nets[p](x).cpu().numpy()
+                        sq_err = ((pred - advs) ** 2 * masks).sum(axis=1) / masks.sum(axis=1).clip(1)
+                        writer.add_scalar(f"diag/loss_{label}", sq_err.mean(), iteration)
+
+                        # 2. average regret magnitude
+                        regret_mag = np.abs(advs * masks).sum(axis=1).mean()
+                        writer.add_scalar(f"diag/regret_mag_{label}", regret_mag, iteration)
+
+                    # 3. fold frequency from strategy buffers
+                    if len(sb_bufs[p]) >= 100:
+                        sv, ss, sw = sb_bufs[p].sample(min(len(sb_bufs[p]), 5_000))
+                        fold_freq = ss[:, FOLD].mean()
+                        writer.add_scalar(f"diag/fold_freq_{label}", fold_freq, iteration)
+
+                for p in [0, 1]:
+                    writer.add_scalar(f"buffer/vb_p{p}", len(vb_bufs[p]), iteration)
                     writer.add_scalar(f"buffer/sb_p{p}", len(sb_bufs[p]), iteration)
 
                 elapsed = time.time() - t0
@@ -164,14 +191,13 @@ def train():
                 eta     = (N_ITERATIONS - iteration) / rate
                 writer.add_scalar("speed/it_per_s", rate, iteration)
                 print(f"iter {iteration:6d} | "
-                      f"vb={len(vb_buf)} | "
+                      f"vb=({len(vb_bufs[0])},{len(vb_bufs[1])}) sb=({len(sb_bufs[0])},{len(sb_bufs[1])}) | "
                       f"{rate:.1f} it/s | ETA {eta/3600:.1f}h")
 
             if iteration % SAVE_EVERY == 0:
                 torch.save({
                     "iteration": iteration,
-                    "vb_net": vb_net.state_dict(),
-                    "vb_buf": vb_buf.buffer,
+                    "vb_net_0": vb_nets[0].state_dict(), "vb_net_1": vb_nets[1].state_dict(),
                     "sb_buf_0": sb_bufs[0].buffer, "sb_buf_1": sb_bufs[1].buffer,
                 }, os.path.join(SAVE_DIR, f"checkpoint_{iteration}.pt"))
                 print(f"  saved checkpoint_{iteration}.pt")

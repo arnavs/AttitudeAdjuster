@@ -349,7 +349,11 @@ def traverse(state, traverser,
         value_betting_buf.add(vec, regrets, mask)
         return node_value
 
-    action = int(np.random.choice(N_BETTING_ACTIONS, p=strategy))
+    # exploration floor: ensure opponent explores all legal actions
+    eps = 0.05
+    uniform = mask / mask.sum()
+    sample_strategy = (1 - eps) * strategy + eps * uniform
+    action = int(np.random.choice(N_BETTING_ACTIONS, p=sample_strategy))
 
     s2           = state.clone()
     street_ended = s2.apply_bet(player, action)
