@@ -39,11 +39,11 @@ from encoder import FOLD
 N_ITERATIONS    = 50_000
 K_TRAVERSALS    = 1000         # per iteration per player (one per core)
 TRAIN_EVERY     = 25        # retrain value nets every N iterations
-VALUE_BET_BUF   = 2_500_000
-STRAT_BET_BUF   = 1_500_000
+VALUE_BET_BUF   = 3_000_000
+STRAT_BET_BUF   = 2_000_000
 BATCH_SIZE      = 1024
 N_TRAIN_STEPS   = 500
-N_CORES         = 8
+N_CORES         = 12
 LR              = 1e-3
 SAVE_EVERY      = 50
 SAVE_DIR        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
