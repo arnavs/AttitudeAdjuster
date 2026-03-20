@@ -10,7 +10,7 @@ from network import (
     StrategyBuffer, train_strategy_network,
 )
 
-CKPT_PATH = sys.argv[1] if len(sys.argv) > 1 else "submission/checkpoints/checkpoint_latest.pt"
+CKPT_PATH = sys.argv[1] if len(sys.argv) > 1 else "submission/checkpoints/checkpoint_50.pt"
 OUT_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 BATCH_SIZE = 1024
 N_STEPS    = 2000

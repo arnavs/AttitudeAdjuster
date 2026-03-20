@@ -421,7 +421,8 @@ class PlayerAgent(Agent):
         if ev_probs.sum() > 0:
             ev_probs /= ev_probs.sum()
 
-        weight = min(0.4, (POSTERIOR_THRESHOLD - eff) / POSTERIOR_THRESHOLD)
+        # maximum 20% weight on Bayesian posterior 
+        weight = min(0.2, (POSTERIOR_THRESHOLD - eff) / POSTERIOR_THRESHOLD)
         return (1 - weight) * probs + weight * ev_probs
 
     # ── helpers ───────────────────────────────────────────────────────────────

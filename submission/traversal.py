@@ -345,6 +345,7 @@ def traverse(state, traverser,
         regrets = np.zeros(N_BETTING_ACTIONS, dtype=np.float32)
         for action in action_values:
             regrets[action] = reach_opponent * (action_values[action] - node_value)
+        regrets = np.clip(regrets, -50, 50)
 
         value_betting_buf.add(vec, regrets, mask)
         return node_value

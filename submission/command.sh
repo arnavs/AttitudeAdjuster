@@ -1,29 +1,12 @@
-/Users/arnavsood/MachineYearning/.venv/bin/python -c "
-import sys, os, time
-sys.path.insert(0, 'submission')
-sys.path.insert(0, '.')
-from traversal import GameState, CALL
-from gym_env import PokerEnv, WrappedEval
-from player import PlayerAgent
-
-agent = PlayerAgent.__new__(PlayerAgent)
-agent.evaluator = WrappedEval()
-agent.action_types = PokerEnv.ActionType
-
-s = GameState()
-s.apply_bet(0, CALL)
-s.advance_street()
-
-obs_bb = s.obs(1)
-obs_bb['blind_position'] = 1
-t0 = time.time()
-result = agent._heuristic_discard(obs_bb)
-print(f'BB discard: {time.time()-t0:.3f}s, keep=({result[2]},{result[3]})')
-
-s.apply_discard(1, result[2], result[3])
-obs_sb = s.obs(0)
-obs_sb['blind_position'] = 0
-t0 = time.time()
-result = agent._heuristic_discard(obs_sb)
-print(f'SB discard: {time.time()-t0:.3f}s, keep=({result[2]},{result[3]})')
-" 2>&1 | grep -v "Gym\|upgrade\|Users of\|migration"
+source /Users/arnavsood/MachineYearning/.venv/bin/activate && python3 -c "
+from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+ea = EventAccumulator('submission/checkpoints/runs')
+ea.Reload()
+for tag in ['loss/value_betting_p0', 'loss/value_betting_p1', 'diag/loss_SB', 'diag/loss_BB', 'diag/regret_mag_SB', 'diag/regret_mag_BB', 'diag/fold_freq_SB', 'diag/fold_freq_BB']:
+    events = ea.Scalars(tag)
+    if events:
+        print(f'{tag}:')
+        for e in events:
+            print(f'  iter {e.step:5d}: {e.value:.4f}')
+        print()
+"
