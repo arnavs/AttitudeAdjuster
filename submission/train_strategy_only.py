@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import torch
 import torch.optim as optim
 from network import (
-    make_betting_net, make_discard_net,
+    make_betting_net,
     StrategyBuffer, train_strategy_network,
 )
 
@@ -21,26 +21,23 @@ print(f"Loading checkpoint: {CKPT_PATH}")
 ckpt = torch.load(CKPT_PATH, map_location=device, weights_only=False)
 
 for p in [0, 1]:
-    for tag, net_fn, buf_key in [
-        ("betting", make_betting_net, f"sb_buf_{p}"),
-        ("discard", make_discard_net, f"sd_buf_{p}"),
-    ]:
-        buf = StrategyBuffer(len(ckpt[buf_key]) + 1)
-        buf.buffer = ckpt[buf_key]
-        buf.n_seen = len(buf.buffer)
+    buf_key = f"sb_buf_{p}"
+    buf = StrategyBuffer(len(ckpt[buf_key]) + 1)
+    buf.buffer = ckpt[buf_key]
+    buf.n_seen = len(buf.buffer)
 
-        print(f"\nTraining strategy_{tag}_p{p} on {len(buf)} samples...")
-        if len(buf) < BATCH_SIZE:
-            print(f"  Skipping: only {len(buf)} samples (need {BATCH_SIZE})")
-            continue
+    print(f"\nTraining strategy_betting_p{p} on {len(buf)} samples...")
+    if len(buf) < BATCH_SIZE:
+        print(f"  Skipping: only {len(buf)} samples (need {BATCH_SIZE})")
+        continue
 
-        net = net_fn().to(device)
-        opt = optim.Adam(net.parameters(), lr=LR)
-        loss = train_strategy_network(net, buf, opt, BATCH_SIZE, N_STEPS, device)
-        print(f"  Final loss: {loss:.4f}")
+    net = make_betting_net().to(device)
+    opt = optim.Adam(net.parameters(), lr=LR)
+    loss = train_strategy_network(net, buf, opt, BATCH_SIZE, N_STEPS, device)
+    print(f"  Final loss: {loss:.4f}")
 
-        path = os.path.join(OUT_DIR, f"strategy_{tag}_p{p}_final.pt")
-        torch.save(net.state_dict(), path)
-        print(f"  Saved: {path}")
+    path = os.path.join(OUT_DIR, f"strategy_betting_p{p}_final.pt")
+    torch.save(net.state_dict(), path)
+    print(f"  Saved: {path}")
 
 print("\nDone.")

@@ -21,7 +21,6 @@ from encoder import (
     N_BETTING_ACTIONS, N_DISCARD_ACTIONS,
 )
 from network import get_strategy
-from solve_discard import TEMP, lookup_bb_prob, lookup_bb_probs
 from gym_env import PokerEnv, WrappedEval
 
 
@@ -265,7 +264,7 @@ def traverse(state, traverser,
              strategy_betting_bufs,
              iteration,
              reach_traverser=1.0, reach_opponent=1.0,
-             device='cpu', bb_table=None):
+             device='cpu'):
     """
     External sampling MCCFR traversal.
     Returns counterfactual value for traverser at this node.
@@ -290,7 +289,7 @@ def traverse(state, traverser,
                 iteration=iteration,
                 reach_traverser=reach_traverser,
                 reach_opponent=reach_opponent,
-                device=device, bb_table=bb_table,
+                device=device,
             )
         if not state.discard_done[0]:  # SB discards second
             return _traverse_discard(
@@ -301,7 +300,7 @@ def traverse(state, traverser,
                 iteration=iteration,
                 reach_traverser=reach_traverser,
                 reach_opponent=reach_opponent,
-                device=device, bb_table=bb_table,
+                device=device,
             )
 
     if state.terminal:
@@ -337,7 +336,7 @@ def traverse(state, traverser,
                 strategy_betting_bufs,
                 iteration,
                 reach_traverser * strategy[action], reach_opponent,
-                device, bb_table=bb_table,
+                device,
             )
 
         node_value = sum(strategy[a] * action_values[a]
@@ -364,74 +363,10 @@ def traverse(state, traverser,
         strategy_betting_bufs,
         iteration,
         reach_traverser, reach_opponent * strategy[action],
-        device, bb_table=bb_table,
+        device,
     )
 
 
-# FROM SB's PERSPECTIVE
-def _bb_discard_prob(bb_table, evaluator, h1, h2, opp_discs, board):
-    """Look up probability that BB kept (h1, h2) from [h1, h2] + opp_discs."""
-    bb_full = [h1, h2] + list(opp_discs)
-    return lookup_bb_prob(bb_table, evaluator, bb_full, board[:3], 0)
-
-
-def _best_discard_heuristic(state, player, bb_table, n_samples=20):
-    """BB: sample from table strategy. SB: table-weighted equity."""
-    evaluator = WrappedEval()
-    hand = list(state.hole[player])
-    board = state.board()
-    opp = 1 - player
-    n_remaining = 5 - len(board)
-
-    opp_discs = []
-    if state.discard_done[opp]:
-        opp_discs = list(state.discarded[opp])
-
-    is_sb = (player == 0)
-
-    if not is_sb:
-        # BB: sample from table strategy directly
-        probs = lookup_bb_probs(bb_table, evaluator, hand, board[:3])
-        probs /= probs.sum()
-        return int(np.random.choice(N_DISCARD_ACTIONS, p=probs))
-
-    # SB: weighted by BB's table probabilities, softmax over equities
-    dead = set(board) | set(hand) | set(opp_discs)
-    pool = [c for c in range(27) if c not in dead]
-    equities = np.zeros(N_DISCARD_ACTIONS, dtype=np.float64)
-
-    for action in range(N_DISCARD_ACTIONS):
-        ki, kj = discard_action_to_keep_pair(action)
-        k1, k2 = hand[ki], hand[kj]
-        weighted_wins, total_weight = 0.0, 0.0
-        for _ in range(n_samples):
-            if len(pool) < 2 + n_remaining:
-                break
-            sampled = np.random.choice(pool, size=2 + n_remaining, replace=False)
-            r1, r2 = int(sampled[0]), int(sampled[1])
-
-            weight = _bb_discard_prob(bb_table, evaluator, r1, r2, opp_discs, board)
-            if weight < 1e-9:
-                continue
-
-            remaining_board = [int(c) for c in sampled[2:]]
-            full_board = [PokerEnv.int_to_card(c) for c in board] + \
-                         [PokerEnv.int_to_card(int(c)) for c in remaining_board]
-            my_rank = evaluator.evaluate(
-                [PokerEnv.int_to_card(k1), PokerEnv.int_to_card(k2)], full_board)
-            opp_rank = evaluator.evaluate(
-                [PokerEnv.int_to_card(r1), PokerEnv.int_to_card(r2)], full_board)
-            outcome = 1.0 if my_rank < opp_rank else 0.5 if my_rank == opp_rank else 0.0
-            weighted_wins += weight * outcome
-            total_weight += weight
-
-        equities[action] = weighted_wins / max(total_weight, 1e-9)
-
-    logits = TEMP * equities
-    logits -= logits.max()
-    probs = np.exp(logits)
-    probs /= probs.sum()
-    return int(np.random.choice(N_DISCARD_ACTIONS, p=probs))
 
 
 def _traverse_discard(state, player, traverser,
@@ -440,12 +375,71 @@ def _traverse_discard(state, player, traverser,
                       strategy_betting_bufs,
                       iteration,
                       reach_traverser, reach_opponent,
-                      device, bb_table=None):
-    """Handle a discard decision node using table-based discard."""
-    action = _best_discard_heuristic(state, player, bb_table)
-    ki, kj = discard_action_to_keep_pair(action)
+                      device):
+    """Handle a discard decision node with MC equity against random opponent."""
+    evaluator = WrappedEval()
+    hand = list(state.hole[player])
+    board = state.board()
+    opp = 1 - player
+    opp_discs = state.discarded[opp] if state.discard_done[opp] else []
+    dead = set(hand) | set(board) | set(opp_discs)
+    pool = [c for c in range(27) if c not in dead]
+    n_remaining = 5 - len(board)
+    n_samples = 20
+    temp = 6.0
+    wins = np.zeros(len(KEEP_PAIRS), dtype=np.float64)
+    for _ in range(n_samples):
+        sampled = np.random.choice(pool, size=5 + n_remaining, replace=False)
+        opp_hand = [int(c) for c in sampled[:5]]
+        runout = [int(c) for c in sampled[5:]]
+
+        # opponent keeps pair via MC equity softmax (Level 1.5)
+        opp_dead = set(opp_hand) | set(board) | set(opp_discs)
+        opp_pool = [c for c in range(27) if c not in opp_dead]
+        opp_eq = np.zeros(len(KEEP_PAIRS), dtype=np.float64)
+        n_inner = 5
+        for oi_idx, (oi, oj) in enumerate(KEEP_PAIRS):
+            ok1, ok2 = opp_hand[oi], opp_hand[oj]
+            ow = 0.0
+            for _ in range(n_inner):
+                inner_s = np.random.choice(opp_pool, size=2 + n_remaining, replace=False)
+                ib = board + [int(c) for c in inner_s[2:]]
+                ib_cards = [PokerEnv.int_to_card(c) for c in ib]
+                mr = evaluator.evaluate(
+                    [PokerEnv.int_to_card(ok1), PokerEnv.int_to_card(ok2)], ib_cards)
+                vr = evaluator.evaluate(
+                    [PokerEnv.int_to_card(int(inner_s[0])), PokerEnv.int_to_card(int(inner_s[1]))], ib_cards)
+                ow += 1.0 if mr < vr else 0.5 if mr == vr else 0.0
+            opp_eq[oi_idx] = ow / n_inner
+        opp_logits = temp * opp_eq
+        opp_logits -= opp_logits.max()
+        opp_probs = np.exp(opp_logits)
+        opp_probs /= opp_probs.sum()
+        opp_action = int(np.random.choice(len(KEEP_PAIRS), p=opp_probs))
+        opp_k1, opp_k2 = opp_hand[KEEP_PAIRS[opp_action][0]], opp_hand[KEEP_PAIRS[opp_action][1]]
+
+        board5 = board + runout
+        board5_cards = [PokerEnv.int_to_card(c) for c in board5]
+        opp_rank = evaluator.evaluate(
+            [PokerEnv.int_to_card(opp_k1), PokerEnv.int_to_card(opp_k2)], board5_cards)
+        for idx, (ki, kj) in enumerate(KEEP_PAIRS):
+            my_rank = evaluator.evaluate(
+                [PokerEnv.int_to_card(hand[ki]), PokerEnv.int_to_card(hand[kj])], board5_cards)
+            if my_rank < opp_rank:
+                wins[idx] += 1.0
+            elif my_rank == opp_rank:
+                wins[idx] += 0.5
+    equities = wins / n_samples
+
+    logits = temp * equities
+    logits -= logits.max()
+    probs = np.exp(logits)
+    probs /= probs.sum()
+    action = int(np.random.choice(len(KEEP_PAIRS), p=probs))
+    best_ki, best_kj = KEEP_PAIRS[action]
+
     s2 = state.clone()
-    s2.apply_discard(player, ki, kj)
+    s2.apply_discard(player, best_ki, best_kj)
     return traverse(
         s2, traverser,
         value_betting_nets,
@@ -453,7 +447,7 @@ def _traverse_discard(state, player, traverser,
         strategy_betting_bufs,
         iteration,
         reach_traverser, reach_opponent,
-        device, bb_table=bb_table,
+        device,
     )
 
 
@@ -461,7 +455,7 @@ def run_traversal(traverser,
                   value_betting_nets,
                   value_betting_buf,
                   strategy_betting_bufs,
-                  iteration, device='cpu', bb_table=None):
+                  iteration, device='cpu'):
     """Run one complete traversal for the given traverser."""
     state = GameState()
     return traverse(
@@ -469,5 +463,5 @@ def run_traversal(traverser,
         value_betting_nets,
         value_betting_buf,
         strategy_betting_bufs,
-        iteration, device=device, bb_table=bb_table,
+        iteration, device=device,
     )
