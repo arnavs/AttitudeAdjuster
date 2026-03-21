@@ -8,8 +8,8 @@ The game we're learning is a modified version of HUNL ("Heads-Up No Limit") poke
 
    0. The deck is 27 cards (3 suits, no Jacks, Queens, or Kings). Aces can be high or low.
    1. Each player (Small Blind or Big Blind) is dealt 5 preflop. After preflop betting, there is a **discard phase.**
-      a. BB discards 3 cards first, and these are revealed to SB. 
-      b. Then SB discards 3 cards, and these are revealed to BB. 
+      -    BB discards 3 cards first, and these are revealed to SB. 
+      -    Then SB discards 3 cards, and these are revealed to BB. 
    2. Then normal HUNL poker is played on this reduced deck. 
 
 Bots are given stacks of 100 chips at the start of each of 1000 hands. The bot up in chips at the end of 1000 hands win. 
