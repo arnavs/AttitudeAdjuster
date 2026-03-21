@@ -1,11 +1,11 @@
 {
     "bot0": {
-        "file_path": "submission.player.PlayerAgent",
+        "file_path": "submission.player_heuristic.PlayerAgent",
         "port": 8000,
         "player_id": "bot0"
     },
     "bot1": {
-        "file_path": "agents.LetsTryThisAgain.LetsTryThisAgain",
+        "file_path": "agents.prob_agent.ProbabilityAgent",
         "port": 8001,
         "player_id": "bot1"
     },

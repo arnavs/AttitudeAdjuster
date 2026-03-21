@@ -27,7 +27,7 @@ from encoder import (
 )
 from network import make_betting_net, get_policy_distribution
 
-_CKPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
+_CKPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 FOLDOUT_RATIO       = 1.55
 POSTERIOR_THRESHOLD = 15.0
@@ -43,7 +43,7 @@ class PlayerAgent(Agent):
         self.bet_nets = {}
         for p in [0, 1]:
             bn = make_betting_net()
-            bp = os.path.join(_CKPT_DIR, f"strategy_betting_p{p}_iter300.pt")
+            bp = os.path.join(_CKPT_DIR, f"strategy_betting_p{p}_iter200.pt")
             if not os.path.exists(bp):
                 raise FileNotFoundError(f"Betting net not found: {bp}")
             bn.load_state_dict(torch.load(bp, map_location='cpu'))

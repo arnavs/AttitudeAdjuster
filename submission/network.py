@@ -13,6 +13,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from encoder import INPUT_DIM, N_BETTING_ACTIONS, N_DISCARD_ACTIONS
 
+# post-discard: 2 hole + 5 community = 7 cards for interactions
+N_INTERACT_SLOTS = 7
+N_INTERACT_FEATS = 2  # mean rank proximity, suit match density
+
+# precompute pair indices once
+_IDX_I, _IDX_J = torch.triu_indices(N_INTERACT_SLOTS, N_INTERACT_SLOTS, offset=1)
+
 
 # ── network ──────────────────────────────────────────────────────────────────
 
@@ -26,11 +33,12 @@ class ResBlock(nn.Module):
     def forward(self, x):
         return self.act(self.fc(self.norm(x)) + x)
 
+
 class CFRNet(nn.Module):
-    def __init__(self, output_dim, hidden=256):
+    def __init__(self, output_dim, hidden=128):
         super().__init__()
         self.input_layer = nn.Sequential(
-            nn.Linear(INPUT_DIM, hidden),
+            nn.Linear(INPUT_DIM + N_INTERACT_FEATS, hidden),
             nn.PReLU(),
         )
         self.res1 = ResBlock(hidden)
@@ -42,6 +50,24 @@ class CFRNet(nn.Module):
         )
 
     def forward(self, x):
+        # 2 hole cards (dims 0:4) + 5 community cards (dims 10:20) = 7 slots
+        cards = torch.cat([x[:, 0:4], x[:, 10:20]], dim=-1)
+        c = cards.view(x.shape[0], N_INTERACT_SLOTS, 2)
+        ranks = c[:, :, 0]
+        suits = c[:, :, 1]
+
+        rank_diff = torch.abs(ranks[:, _IDX_I] - ranks[:, _IDX_J])
+        suit_match = (torch.abs(suits[:, _IDX_I] - suits[:, _IDX_J]) < 0.01).float()
+
+        alive_i = (ranks[:, _IDX_I] > 0) | (suits[:, _IDX_I] > 0)
+        alive_j = (ranks[:, _IDX_J] > 0) | (suits[:, _IDX_J] > 0)
+        alive = (alive_i & alive_j).float()
+        n_alive = alive.sum(dim=-1, keepdim=True).clamp(min=1)
+
+        mean_rank_diff = (rank_diff * alive).sum(dim=-1, keepdim=True) / n_alive
+        suit_match_frac = (suit_match * alive).sum(dim=-1, keepdim=True) / n_alive
+
+        x = torch.cat([x, mean_rank_diff, suit_match_frac], dim=-1)
         x = self.input_layer(x)
         x = self.res1(x)
         x = self.res2(x)
