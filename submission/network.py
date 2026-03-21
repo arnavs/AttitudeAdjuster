@@ -48,7 +48,7 @@ class CFRNet(nn.Module):
         return self.head(x)
 
 
-def make_betting_net(hidden=256):
+def make_betting_net(hidden=128):
     return CFRNet(output_dim=N_BETTING_ACTIONS, hidden=hidden)
 
 # ── strategy from network ─────────────────────────────────────────────────────

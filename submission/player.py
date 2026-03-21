@@ -43,7 +43,7 @@ class PlayerAgent(Agent):
         self.bet_nets = {}
         for p in [0, 1]:
             bn = make_betting_net()
-            bp = os.path.join(_CKPT_DIR, f"strategy_betting_p{p}_final.pt")
+            bp = os.path.join(_CKPT_DIR, f"strategy_betting_p{p}_iter300.pt")
             if not os.path.exists(bp):
                 raise FileNotFoundError(f"Betting net not found: {bp}")
             bn.load_state_dict(torch.load(bp, map_location='cpu'))

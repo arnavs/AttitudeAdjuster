@@ -5,22 +5,23 @@ Cards are integers 0-26:
   rank = card % 9   (0=2, 1=3, ..., 7=9, 8=A)
   suit = card // 9  (0=d, 1=h, 2=s)
 
-Each card -> 12-dim vector: 9-dim rank one-hot + 3-dim suit one-hot.
-Unknown/absent cards -> 12 zeros.
+Each card -> 2-dim vector: (rank/8, suit/2).
+Unknown/absent cards -> (0, 0).
 
-Input vector layout (203 dims total):
-  [0:60]    my_hole_cards     5 x 12  (all 5 preflop/discard; 2 filled + 3 zeros postflop)
-  [60:120]  community_cards   5 x 12  (zeros for unseen)
-  [120:156] my_discards       3 x 12  (zeros until I discard)
-  [156:192] opp_discards      3 x 12  (zeros until revealed)
-  [192]     position          1 dim (0=SB, 1=BB)
-  [193:197] street            4 dims one-hot
-  [197]     pot_size          1 dim normalized
-  [198]     my_stack          1 dim normalized
-  [199]     opp_stack         1 dim normalized
-  [200]     my_bet            1 dim normalized
-  [201]     opp_bet           1 dim normalized
-  [202]     is_discard_node   1 dim
+Input vector layout (44 dims total):
+  [0:10]    my_hole_cards     5 x 2  (all 5 preflop/discard; 2 filled + 3 zeros postflop)
+  [10:20]   community_cards   5 x 2  (zeros for unseen)
+  [20:26]   my_discards       3 x 2  (zeros until I discard)
+  [26:32]   opp_discards      3 x 2  (zeros until revealed)
+  [32]      hand_strength     1 dim  (1 - rank/7462, higher = better; 0.5 if unavailable)
+  [33]      position          1 dim  (0=SB, 1=BB)
+  [34:38]   street            4 dims one-hot
+  [38]      pot_size          1 dim normalized
+  [39]      my_stack          1 dim normalized
+  [40]      opp_stack         1 dim normalized
+  [41]      my_bet            1 dim normalized
+  [42]      opp_bet           1 dim normalized
+  [43]      is_discard_node   1 dim
 
 Betting actions (6):
   0: fold
@@ -36,8 +37,9 @@ Discard actions (10):
 
 import numpy as np
 from itertools import combinations
+from gym_env import PokerEnv, WrappedEval
 
-CARD_DIM  = 12
+CARD_DIM  = 2
 N_RANKS   = 9
 N_SUITS   = 3
 
@@ -45,8 +47,10 @@ N_HOLE      = 5
 N_COMMUNITY = 5
 N_DISCARDS  = 3
 
-INPUT_DIM = (N_HOLE + N_COMMUNITY + N_DISCARDS + N_DISCARDS) * CARD_DIM + 11
-# = 203
+N_SCALARS = 12  # hand_strength(1) + position(1) + street(4) + pot(1) + stacks(2) + bets(2) + is_discard(1)
+
+INPUT_DIM = (N_HOLE + N_COMMUNITY + N_DISCARDS + N_DISCARDS) * CARD_DIM + N_SCALARS
+# = 32 + 12 = 44
 
 N_BETTING_ACTIONS = 6
 N_DISCARD_ACTIONS = 10
@@ -61,17 +65,17 @@ BET_SMALL = 3
 BET_MED   = 4
 BET_LARGE = 5
 
+_evaluator = WrappedEval()
+_MAX_RANK  = 7462
+
 
 def encode_card(card_int):
-    """card_int in [0,26] -> 12-dim vector. -1 -> zeros."""
-    vec = np.zeros(CARD_DIM, dtype=np.float32)
+    """card_int in [0,26] -> 2-dim vector (rank/8, suit/2). -1 -> zeros."""
     if card_int < 0:
-        return vec
+        return np.zeros(CARD_DIM, dtype=np.float32)
     rank = card_int % N_RANKS
     suit = card_int // N_RANKS
-    vec[rank] = 1.0
-    vec[N_RANKS + suit] = 1.0
-    return vec
+    return np.array([rank / 8.0, suit / 2.0], dtype=np.float32)
 
 
 def encode_cards(card_list, n_slots):
@@ -87,10 +91,24 @@ def encode_cards(card_list, n_slots):
     return vec
 
 
+def hand_strength(my_cards, community):
+    """
+    Single evaluator call: normalized hand rank (1 = nuts, 0 = worst).
+    Returns 0.5 if we don't have exactly 2 hole cards and 3+ board cards.
+    """
+    hole = [c for c in my_cards if c >= 0]
+    board = [c for c in community if c >= 0]
+    if len(hole) != 2 or len(board) < 3:
+        return 0.5
+    treys_hole = [PokerEnv.int_to_card(c) for c in hole]
+    treys_board = [PokerEnv.int_to_card(c) for c in board[:5]]
+    rank = _evaluator.evaluate(treys_hole, treys_board)
+    return 1.0 - rank / _MAX_RANK
+
+
 def encode_infoset(observation, is_discard_node=False):
     """
-    Convert a gym observation dict into a 203-dim input vector.
-    Same vector used for both betting and discard networks.
+    Convert a gym observation dict into a 44-dim input vector.
     """
     parts = []
 
@@ -103,6 +121,8 @@ def encode_infoset(observation, is_discard_node=False):
     parts.append(encode_cards(community, N_COMMUNITY))
     parts.append(encode_cards(my_disc,   N_DISCARDS))
     parts.append(encode_cards(opp_disc,  N_DISCARDS))
+
+    hs = hand_strength(my_cards, community)
 
     position = float(observation["blind_position"])
     street   = int(observation["street"])
@@ -117,6 +137,7 @@ def encode_infoset(observation, is_discard_node=False):
     opp_bet   = observation["opp_bet"] / 100.0
 
     scalars = np.array([
+        hs,
         position,
         *street_onehot,
         pot,

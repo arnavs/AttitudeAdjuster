@@ -1,6 +1,6 @@
 # LOU Attitude Adjuster
 
-This is my submission for CMU's AI Poker Contest. It's named after the [Culture Warship](https://theculture.fandom.com/wiki/Attitude_Adjuster), and also because of what it does: blend a Deep CFR approach with a Bayesian posterior over opponent's holes (i.e., an attitude adjuster).
+This is my submission for CMU's [AI Poker Contest](https://cmudsc.com/pokerai-2026/). It's named after the [Culture Warship](https://theculture.fandom.com/wiki/Attitude_Adjuster), and also because of what it does: blend a Deep CFR approach with a Bayesian posterior over opponent's holes (i.e., an attitude adjuster).
 
 ## The Game 
 
