@@ -37,15 +37,15 @@ from encoder import FOLD
 
 # ── hyperparameters ───────────────────────────────────────────────────────────
 N_ITERATIONS    = 50_000
-K_TRAVERSALS    = 1000      # per iteration per player (one per core)
+K_TRAVERSALS    = 500      # per iteration per player (one per core)
 TRAIN_EVERY     = 10        # retrain value nets every N iterations
 VALUE_BET_BUF   = 3_000_000
 STRAT_BET_BUF   = 3_000_000
 BATCH_SIZE      = 1024
-N_TRAIN_STEPS   = 500
+N_TRAIN_STEPS   = 10000
 N_CORES         = 8
 LR              = 1e-3
-SAVE_EVERY      = 50
+SAVE_EVERY      = 100
 SAVE_DIR        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 WARM_CKPT       = None # os.path.join(SAVE_DIR, "old_start.pt")  # set to None to train from scratch
 
@@ -147,6 +147,8 @@ def train():
                     _merge(vb_bufs[traverser], vb_items)
                     _merge(sb_bufs[0], sb0_items)
                     _merge(sb_bufs[1], sb1_items)
+
+            print(f"\r  iter {iteration} / {N_ITERATIONS} ({iteration % TRAIN_EVERY}/{TRAIN_EVERY} to next train)", end="", flush=True)
 
             # retrain value networks
             if iteration % TRAIN_EVERY == 0:
