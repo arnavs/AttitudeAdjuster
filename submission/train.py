@@ -46,6 +46,7 @@ N_TRAIN_STEPS   = 10000
 N_CORES         = 8
 LR              = 1e-3
 SAVE_EVERY      = 100
+STRAT_EVERY     = 100       # train + save strategy nets every N iterations
 SAVE_DIR        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 WARM_CKPT       = None # os.path.join(SAVE_DIR, "old_start.pt")  # set to None to train from scratch
 

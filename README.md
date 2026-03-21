@@ -1,4 +1,9 @@
-#Team Bot
+# LOU Attitude Adjuster
+
+This is my submission for CMU's AI Poker Contest. It's named after the [Culture Warship](https://theculture.fandom.com/wiki/Attitude_Adjuster), and also because of what it does: blend a Deep CFR approach with a Bayesian posterior over opponent's holes (i.e., an attitude adjuster).
+
+
+
 
 ## How to run the engine
 
@@ -35,9 +40,9 @@
 pytest --cov=gym_env --cov-report=term-missing --cov-report=html --cov-branch
 ```
 
-### Testing Your Submission
+### Testing
 
-1. To test your agent (5 hands per bot) against ProbabilityAgent, AllInAgent, FoldAgent, CallingStationAgent, RandomAgent:
+1. To test the Attitude Adjuster against ProbabilityAgent, AllInAgent, FoldAgent, CallingStationAgent, RandomAgent:
 
 ```bash
 python agent_test.py
@@ -49,4 +54,4 @@ python agent_test.py
 python run.py
 ```
 
-You can modify which bots play by modifying the agent config file. Write the file path to the corresponding agent for that bot to play.
+You can modify which bots play by modifying the agent config file. Write the file path to the corresponding agent for that bot to play. 
