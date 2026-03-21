@@ -197,22 +197,33 @@ def train():
                       f"vb=({len(vb_bufs[0])},{len(vb_bufs[1])}) sb=({len(sb_bufs[0])},{len(sb_bufs[1])}) | "
                       f"{rate:.1f} it/s | ETA {eta/3600:.1f}h")
 
+            # train + save strategy nets periodically
+            if iteration % STRAT_EVERY == 0:
+                for p in [0, 1]:
+                    if len(sb_bufs[p]) >= BATCH_SIZE:
+                        snet = make_betting_net().to(device)
+                        sopt = optim.Adam(snet.parameters(), lr=LR)
+                        sloss = train_strategy_network(snet, sb_bufs[p], sopt, BATCH_SIZE, N_TRAIN_STEPS, device)
+                        path = os.path.join(SAVE_DIR, f"strategy_betting_p{p}_iter{iteration}.pt")
+                        torch.save(snet.state_dict(), path)
+                        sloss_str = f"{sloss:.4f}" if sloss is not None else "n/a"
+                        print(f"  strategy p{p} loss={sloss_str} -> {path}")
+
+            # save just the net weights (no buffers — fast)
             if iteration % SAVE_EVERY == 0:
-                ckpt_path = os.path.join(SAVE_DIR, "checkpoint_latest.pt")
+                ckpt_path = os.path.join(SAVE_DIR, f"checkpoint_iter{iteration}.pt")
                 torch.save({
                     "iteration": iteration,
                     "vb_net_0": vb_nets[0].state_dict(), "vb_net_1": vb_nets[1].state_dict(),
-                    "vb_buf_0": vb_bufs[0].buffer, "vb_buf_1": vb_bufs[1].buffer,
-                    "sb_buf_0": sb_bufs[0].buffer, "sb_buf_1": sb_bufs[1].buffer,
                 }, ckpt_path)
-                print(f"  saved checkpoint_latest.pt (iter {iteration})")
+                print(f"  saved {ckpt_path}")
 
     # train final strategy networks
     print("\nTraining final strategy networks...")
     for p in [0, 1]:
         net = make_betting_net().to(device)
         opt = optim.Adam(net.parameters(), lr=LR)
-        loss = train_strategy_network(net, sb_bufs[p], opt, BATCH_SIZE, 2000, device)
+        loss = train_strategy_network(net, sb_bufs[p], opt, BATCH_SIZE, N_TRAIN_STEPS, device)
         path = os.path.join(SAVE_DIR, f"strategy_betting_p{p}_final.pt")
         torch.save(net.state_dict(), path)
         loss_str = f"{loss:.4f}" if loss is not None else "skipped (buffer too small)"
