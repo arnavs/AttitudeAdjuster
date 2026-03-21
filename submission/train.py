@@ -37,13 +37,13 @@ from encoder import FOLD
 
 # ── hyperparameters ───────────────────────────────────────────────────────────
 N_ITERATIONS    = 50_000
-K_TRAVERSALS    = 1000         # per iteration per player (one per core)
-TRAIN_EVERY     = 25        # retrain value nets every N iterations
+K_TRAVERSALS    = 1000      # per iteration per player (one per core)
+TRAIN_EVERY     = 10        # retrain value nets every N iterations
 VALUE_BET_BUF   = 3_000_000
-STRAT_BET_BUF   = 2_000_000
+STRAT_BET_BUF   = 3_000_000
 BATCH_SIZE      = 1024
 N_TRAIN_STEPS   = 500
-N_CORES         = 12
+N_CORES         = 8
 LR              = 1e-3
 SAVE_EVERY      = 50
 SAVE_DIR        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
@@ -195,12 +195,14 @@ def train():
                       f"{rate:.1f} it/s | ETA {eta/3600:.1f}h")
 
             if iteration % SAVE_EVERY == 0:
+                ckpt_path = os.path.join(SAVE_DIR, "checkpoint_latest.pt")
                 torch.save({
                     "iteration": iteration,
                     "vb_net_0": vb_nets[0].state_dict(), "vb_net_1": vb_nets[1].state_dict(),
+                    "vb_buf_0": vb_bufs[0].buffer, "vb_buf_1": vb_bufs[1].buffer,
                     "sb_buf_0": sb_bufs[0].buffer, "sb_buf_1": sb_bufs[1].buffer,
-                }, os.path.join(SAVE_DIR, f"checkpoint_{iteration}.pt"))
-                print(f"  saved checkpoint_{iteration}.pt")
+                }, ckpt_path)
+                print(f"  saved checkpoint_latest.pt (iter {iteration})")
 
     # train final strategy networks
     print("\nTraining final strategy networks...")

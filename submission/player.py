@@ -39,7 +39,6 @@ class PlayerAgent(Agent):
         super().__init__(stream)
         self.action_types = PokerEnv.ActionType
         self.evaluator    = WrappedEval()
-
         # load strategy networks
         self.bet_nets = {}
         for p in [0, 1]:
@@ -137,7 +136,7 @@ class PlayerAgent(Agent):
     # ── discard ───────────────────────────────────────────────────────────────
 
     def _act_discard(self, observation):
-        """MC equity against random opponent (Level 1). Pick best keep-pair."""
+        """MC equity against Level 1.5 opponent. BB internalizes that SB sees discards."""
         my_cards  = [c for c in observation["my_cards"] if c != -1]
         community = [c for c in observation["community_cards"] if c != -1]
         opp_discs = [c for c in observation["opp_discarded_cards"] if c != -1]
@@ -145,48 +144,58 @@ class PlayerAgent(Agent):
         dead = set(my_cards) | set(community) | set(opp_discs)
         pool = [c for c in range(27) if c not in dead]
         n_remaining = 5 - len(community)
-        n_samples = 200
+        n_samples = 20
         temp = 6.0
-        flop_cards = [PokerEnv.int_to_card(c) for c in community[:3]]
+        n_inner = 5
+        # BB discards first — SB will see our discards
+        bb_discards_first = (observation["blind_position"] == 1
+                             and all(c == -1 for c in observation["opp_discarded_cards"]))
 
-        wins = np.zeros(len(KEEP_PAIRS), dtype=np.float64)
+        # pre-draw shared samples
+        samples = []
         for _ in range(n_samples):
             sampled = np.random.choice(pool, size=5 + n_remaining, replace=False)
             opp_hand = [int(c) for c in sampled[:5]]
             runout = [int(c) for c in sampled[5:]]
-
-            # opponent keeps pair via MC equity softmax (Level 1.5)
-            opp_dead = set(opp_hand) | set(community) | set(opp_discs)
-            opp_pool = [c for c in range(27) if c not in opp_dead]
-            opp_eq = np.zeros(len(KEEP_PAIRS), dtype=np.float64)
-            n_inner = 5
-            for oi_idx, (oi, oj) in enumerate(KEEP_PAIRS):
-                ok1, ok2 = opp_hand[oi], opp_hand[oj]
-                ow = 0.0
-                for _ in range(n_inner):
-                    inner_s = np.random.choice(opp_pool, size=2 + n_remaining, replace=False)
-                    ib = community + [int(c) for c in inner_s[2:]]
-                    ib_cards = [PokerEnv.int_to_card(c) for c in ib]
-                    mr = self.evaluator.evaluate(
-                        [PokerEnv.int_to_card(ok1), PokerEnv.int_to_card(ok2)], ib_cards)
-                    vr = self.evaluator.evaluate(
-                        [PokerEnv.int_to_card(int(inner_s[0])), PokerEnv.int_to_card(int(inner_s[1]))], ib_cards)
-                    ow += 1.0 if mr < vr else 0.5 if mr == vr else 0.0
-                opp_eq[oi_idx] = ow / n_inner
-            opp_logits = temp * opp_eq
-            opp_logits -= opp_logits.max()
-            opp_probs = np.exp(opp_logits)
-            opp_probs /= opp_probs.sum()
-            opp_action = int(np.random.choice(len(KEEP_PAIRS), p=opp_probs))
-            opp_k1, opp_k2 = opp_hand[KEEP_PAIRS[opp_action][0]], opp_hand[KEEP_PAIRS[opp_action][1]]
-
             board5 = community + runout
             board5_treys = [PokerEnv.int_to_card(c) for c in board5]
-            opp_rank = self.evaluator.evaluate(
-                [PokerEnv.int_to_card(opp_k1), PokerEnv.int_to_card(opp_k2)], board5_treys)
-            for idx, (ki, kj) in enumerate(KEEP_PAIRS):
+            samples.append((opp_hand, runout, board5, board5_treys))
+
+        wins = np.zeros(len(KEEP_PAIRS), dtype=np.float64)
+        for idx, (ki, kj) in enumerate(KEEP_PAIRS):
+            my_k1, my_k2 = my_cards[ki], my_cards[kj]
+            my_discs = [c for c in my_cards if c not in (my_k1, my_k2)]
+
+            for opp_hand, runout, board5, board5_treys in samples:
+                opp_dead = set(opp_hand) | set(community) | set(opp_discs)
+                if bb_discards_first:
+                    opp_dead |= set(my_discs)
+                opp_pool = [c for c in range(27) if c not in opp_dead]
+                opp_eq = np.zeros(len(KEEP_PAIRS), dtype=np.float64)
+                for oi_idx, (oi, oj) in enumerate(KEEP_PAIRS):
+                    ok1, ok2 = opp_hand[oi], opp_hand[oj]
+                    ow = 0.0
+                    for _ in range(n_inner):
+                        inner_s = np.random.choice(opp_pool, size=2 + n_remaining, replace=False)
+                        ib = community + [int(c) for c in inner_s[2:]]
+                        ib_cards = [PokerEnv.int_to_card(c) for c in ib]
+                        mr = self.evaluator.evaluate(
+                            [PokerEnv.int_to_card(ok1), PokerEnv.int_to_card(ok2)], ib_cards)
+                        vr = self.evaluator.evaluate(
+                            [PokerEnv.int_to_card(int(inner_s[0])), PokerEnv.int_to_card(int(inner_s[1]))], ib_cards)
+                        ow += 1.0 if mr < vr else 0.5 if mr == vr else 0.0
+                    opp_eq[oi_idx] = ow / n_inner
+                opp_logits = temp * opp_eq
+                opp_logits -= opp_logits.max()
+                opp_probs = np.exp(opp_logits)
+                opp_probs /= opp_probs.sum()
+                opp_action = int(np.random.choice(len(KEEP_PAIRS), p=opp_probs))
+                opp_k1, opp_k2 = opp_hand[KEEP_PAIRS[opp_action][0]], opp_hand[KEEP_PAIRS[opp_action][1]]
+
+                opp_rank = self.evaluator.evaluate(
+                    [PokerEnv.int_to_card(opp_k1), PokerEnv.int_to_card(opp_k2)], board5_treys)
                 my_rank = self.evaluator.evaluate(
-                    [PokerEnv.int_to_card(my_cards[ki]), PokerEnv.int_to_card(my_cards[kj])], board5_treys)
+                    [PokerEnv.int_to_card(my_k1), PokerEnv.int_to_card(my_k2)], board5_treys)
                 if my_rank < opp_rank:
                     wins[idx] += 1.0
                 elif my_rank == opp_rank:

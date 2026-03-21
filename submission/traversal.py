@@ -344,8 +344,7 @@ def traverse(state, traverser,
 
         regrets = np.zeros(N_BETTING_ACTIONS, dtype=np.float32)
         for action in action_values:
-            regrets[action] = reach_opponent * (action_values[action] - node_value)
-        regrets = np.clip(regrets, -50, 50)
+            regrets[action] = action_values[action] - node_value
 
         value_betting_buf.add(vec, regrets, mask)
         return node_value
@@ -381,62 +380,15 @@ def _traverse_discard(state, player, traverser,
                       iteration,
                       reach_traverser, reach_opponent,
                       device):
-    """Handle a discard decision node with MC equity against random opponent."""
+    """Handle a discard decision node. Fast flop-rank softmax for training speed."""
     evaluator = WrappedEval()
     hand = list(state.hole[player])
     board = state.board()
-    opp = 1 - player
-    opp_discs = state.discarded[opp] if state.discard_done[opp] else []
-    dead = set(hand) | set(board) | set(opp_discs)
-    pool = [c for c in range(27) if c not in dead]
-    n_remaining = 5 - len(board)
-    n_samples = 20
-    temp = 6.0
-    wins = np.zeros(len(KEEP_PAIRS), dtype=np.float64)
-    for _ in range(n_samples):
-        sampled = np.random.choice(pool, size=5 + n_remaining, replace=False)
-        opp_hand = [int(c) for c in sampled[:5]]
-        runout = [int(c) for c in sampled[5:]]
-
-        # opponent keeps pair via MC equity softmax (Level 1.5)
-        opp_dead = set(opp_hand) | set(board) | set(opp_discs)
-        opp_pool = [c for c in range(27) if c not in opp_dead]
-        opp_eq = np.zeros(len(KEEP_PAIRS), dtype=np.float64)
-        n_inner = 5
-        for oi_idx, (oi, oj) in enumerate(KEEP_PAIRS):
-            ok1, ok2 = opp_hand[oi], opp_hand[oj]
-            ow = 0.0
-            for _ in range(n_inner):
-                inner_s = np.random.choice(opp_pool, size=2 + n_remaining, replace=False)
-                ib = board + [int(c) for c in inner_s[2:]]
-                ib_cards = [PokerEnv.int_to_card(c) for c in ib]
-                mr = evaluator.evaluate(
-                    [PokerEnv.int_to_card(ok1), PokerEnv.int_to_card(ok2)], ib_cards)
-                vr = evaluator.evaluate(
-                    [PokerEnv.int_to_card(int(inner_s[0])), PokerEnv.int_to_card(int(inner_s[1]))], ib_cards)
-                ow += 1.0 if mr < vr else 0.5 if mr == vr else 0.0
-            opp_eq[oi_idx] = ow / n_inner
-        opp_logits = temp * opp_eq
-        opp_logits -= opp_logits.max()
-        opp_probs = np.exp(opp_logits)
-        opp_probs /= opp_probs.sum()
-        opp_action = int(np.random.choice(len(KEEP_PAIRS), p=opp_probs))
-        opp_k1, opp_k2 = opp_hand[KEEP_PAIRS[opp_action][0]], opp_hand[KEEP_PAIRS[opp_action][1]]
-
-        board5 = board + runout
-        board5_cards = [PokerEnv.int_to_card(c) for c in board5]
-        opp_rank = evaluator.evaluate(
-            [PokerEnv.int_to_card(opp_k1), PokerEnv.int_to_card(opp_k2)], board5_cards)
-        for idx, (ki, kj) in enumerate(KEEP_PAIRS):
-            my_rank = evaluator.evaluate(
-                [PokerEnv.int_to_card(hand[ki]), PokerEnv.int_to_card(hand[kj])], board5_cards)
-            if my_rank < opp_rank:
-                wins[idx] += 1.0
-            elif my_rank == opp_rank:
-                wins[idx] += 0.5
-    equities = wins / n_samples
-
-    logits = temp * equities
+    flop_cards = [PokerEnv.int_to_card(c) for c in board[:3]]
+    ranks = np.array([evaluator.evaluate(
+        [PokerEnv.int_to_card(hand[ki]), PokerEnv.int_to_card(hand[kj])], flop_cards)
+        for ki, kj in KEEP_PAIRS], dtype=np.float64)
+    logits = -ranks / 200.0
     logits -= logits.max()
     probs = np.exp(logits)
     probs /= probs.sum()

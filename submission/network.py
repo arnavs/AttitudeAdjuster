@@ -1,9 +1,7 @@
 """
 Deep CFR networks and replay buffers.
 
-Two network types:
-  BettingNet: infoset -> advantage over 5 betting actions
-  DiscardNet:  infoset -> advantage over 10 discard actions (keep pairs)
+BettingNet: infoset -> advantage over 5 betting actions
 
 Each has a corresponding value network (V) trained per CFR iteration
 and a strategy network (Pi) trained at the end.
@@ -52,11 +50,6 @@ class CFRNet(nn.Module):
 
 def make_betting_net(hidden=256):
     return CFRNet(output_dim=N_BETTING_ACTIONS, hidden=hidden)
-
-
-def make_discard_net(hidden=256):
-    return CFRNet(output_dim=N_DISCARD_ACTIONS, hidden=hidden)
-
 
 # ── strategy from network ─────────────────────────────────────────────────────
 
