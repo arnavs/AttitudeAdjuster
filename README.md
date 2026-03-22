@@ -6,7 +6,7 @@ This is my bot for CMU's [AI Poker Contest](https://cmudsc.com/pokerai-2026/). I
 > **LLM Usage**: I worked heavily with [Claude Code](https://code.claude.com/docs/en/overview) while building this. 
 
 > [!NOTE]  
-> **Submission**: I didn't have time to finish the training run. So what I actually submitted was a Bayesian heuristic bot `submission/frank_exchange.py`, named after the VFP [_Frank Exchange of Views_](https://theculture.fandom.com/wiki/Frank_Exchange_of_Views). It placed around 37th out of 110 or so.
+> **Submission**: I didn't have time to finish the training run. So what I actually submitted was a Bayesian heuristic bot [`submission/frank_exchange.py`](submission/frank_exchange.py), named after the VFP [_Frank Exchange of Views_](https://theculture.fandom.com/wiki/Frank_Exchange_of_Views). It placed around 37th out of 110 or so.
 
 ## The Game 
 
@@ -59,11 +59,11 @@ The rest is mechanics. In particular:
 
 All new code lives in `submission/`. 
 
-   1. The network architecture for the DCFR approach is in `submission/network.py`. 
-   2. The traverser is in `submision/traversal.py`. 
-   3. The player agent is in `submission/player.py`. 
-   4. The training loop is in `submission/train.py`. 
-   4. The observation encoder is in `submission/encoder.py`. 
+   1. The network architecture for the DCFR approach is in [`submission/network.py`](submission/network.py). 
+   2. The traverser is in [`submision/traversal.py`](submission/traversal.py). 
+   3. The player agent is in [`submission/player.py`](submission/player.py). 
+   4. The training loop is in [`submission/train.py`](submission/train.py). 
+   4. The observation encoder is in [`submission/encoder.py`](submission/encoder.py). 
 
 ## How to Train the Bot
 
