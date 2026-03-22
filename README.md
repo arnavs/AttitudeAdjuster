@@ -70,6 +70,8 @@ All new code lives in `submission/`.
 > [!CAUTION]
 > Training is very compute and memory intensive. 
 
+Run `python submission/train.py` from top-level, after activating the venv.
+
 ## How to Run the Engine
 
 1. Create a virtual environment:
