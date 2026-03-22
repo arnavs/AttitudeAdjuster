@@ -2,9 +2,11 @@
 
 This is my bot for CMU's [AI Poker Contest](https://cmudsc.com/pokerai-2026/). It's named after the [Culture Warship](https://theculture.fandom.com/wiki/Attitude_Adjuster), and also because of what it does: blend a Deep CFR approach with a Bayesian posterior over opponent's holes (i.e., an attitude adjuster).
 
-Note:
-   1. **LLM Usage**: I worked heavily with [Claude Code](https://code.claude.com/docs/en/overview) while building this. 
-   2. **Submission**: I didn't have time to finish the training run. So what I actually submitted was `submission/frank_exchange.py`, named after the VFP [_Frank Exchange of Views_](https://theculture.fandom.com/wiki/Frank_Exchange_of_Views).
+> [!NOTE]  
+> **LLM Usage**: I worked heavily with [Claude Code](https://code.claude.com/docs/en/overview) while building this. 
+
+> [!NOTE]  
+> **Submission**: I didn't have time to finish the training run. So what I actually submitted was a Bayesian heuristic bot `submission/frank_exchange.py`, named after the VFP [_Frank Exchange of Views_](https://theculture.fandom.com/wiki/Frank_Exchange_of_Views). It placed around 37th out of 110 or so.
 
 ## The Game 
 
@@ -53,8 +55,6 @@ The rest is mechanics. In particular:
 
 3. Actions are softmaxes over a final action distribution. 
 
-
-
 ## Code Structure
 
 All new code lives in `submission/`. 
@@ -65,7 +65,12 @@ All new code lives in `submission/`.
    4. The training loop is in `submission/train.py`. 
    4. The observation encoder is in `submission/encoder.py`. 
 
-## How to run the engine
+## How to Train the Bot
+
+> [!CAUTION]
+> Training is very compute and memory intensive. 
+
+## How to Run the Engine
 
 1. Create a virtual environment:
 
