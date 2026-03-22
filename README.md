@@ -1,6 +1,10 @@
 # LOU Attitude Adjuster
 
-This is my submission for CMU's [AI Poker Contest](https://cmudsc.com/pokerai-2026/). It's named after the [Culture Warship](https://theculture.fandom.com/wiki/Attitude_Adjuster), and also because of what it does: blend a Deep CFR approach with a Bayesian posterior over opponent's holes (i.e., an attitude adjuster).
+This is my bot for CMU's [AI Poker Contest](https://cmudsc.com/pokerai-2026/). It's named after the [Culture Warship](https://theculture.fandom.com/wiki/Attitude_Adjuster), and also because of what it does: blend a Deep CFR approach with a Bayesian posterior over opponent's holes (i.e., an attitude adjuster).
+
+Note:
+   1. **LLM Usage**: I worked heavily with [Claude Code](https://code.claude.com/docs/en/overview) while building this. 
+   2. **Submission**: I didn't have time to finish the training run. So what I actually submitted was `submission/frank_exchange.py`, named after the VFP [_Frank Exchange of Views_](https://theculture.fandom.com/wiki/Frank_Exchange_of_Views).
 
 ## The Game 
 
