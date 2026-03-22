@@ -36,13 +36,13 @@ from encoder import FOLD
 # position feature is the first scalar after card encodings
 
 # ── hyperparameters ───────────────────────────────────────────────────────────
-N_ITERATIONS    = 50_000
+N_ITERATIONS    = 100_000
 K_TRAVERSALS    = 500      # per iteration per player (one per core)
-TRAIN_EVERY     = 10        # retrain value nets every N iterations
-VALUE_BET_BUF   = 3_000_000
-STRAT_BET_BUF   = 3_000_000
+TRAIN_EVERY     = 100       # retrain value nets every N iterations
+VALUE_BET_BUF   = 5_000_000
+STRAT_BET_BUF   = 5_000_000
 BATCH_SIZE      = 1024
-N_TRAIN_STEPS   = 10000
+N_TRAIN_STEPS   = 30000
 N_CORES         = 8
 LR              = 1e-3
 SAVE_EVERY      = 100

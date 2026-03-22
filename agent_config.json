@@ -1,6 +1,6 @@
 {
     "bot0": {
-        "file_path": "submission.player_heuristic.PlayerAgent",
+        "file_path": "submission.player.PlayerAgent",
         "port": 8000,
         "player_id": "bot0"
     },
