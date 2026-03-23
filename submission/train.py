@@ -37,13 +37,13 @@ from encoder import FOLD
 
 # ── hyperparameters ───────────────────────────────────────────────────────────
 N_ITERATIONS    = 100_000
-K_TRAVERSALS    = 500      # per iteration per player (one per core)
+K_TRAVERSALS    = 1000      # per iteration per player (one per core)
 TRAIN_EVERY     = 100       # retrain value nets every N iterations
-VALUE_BET_BUF   = 5_000_000
-STRAT_BET_BUF   = 5_000_000
+VALUE_BET_BUF   = 10_000_000
+STRAT_BET_BUF   = 10_000_000
 BATCH_SIZE      = 1024
 N_TRAIN_STEPS   = 30000
-N_CORES         = 8
+N_CORES         = 12
 LR              = 1e-3
 SAVE_EVERY      = 100
 STRAT_EVERY     = 100       # train + save strategy nets every N iterations
