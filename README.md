@@ -24,7 +24,7 @@ Bots are given stacks of 100 chips at the start of each of 1000 hands. The bot u
 This bot had to be prepared under strict constraints. In particular: 
 
    * 1GB upload limit. 
-   * 4GB RAM, 4 vCPUs, and 1500 seconds total to move on the server. 
+   * 4GB RAM, 4 vCPUs, and 1500 seconds total to move on the server. (competition had compute on a sliding scale; this was the highest/last phase.)
    * One week from revelation of the variant to the competition. 
    * I only had my laptop (16GB RAM, 8 virtual M4 cores) available for training. 
       > The RAM point is crucial, since the algorithm requires holding a buffer in memory, and hitting swap memory was a noticeable slowdown.
