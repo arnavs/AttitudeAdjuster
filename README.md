@@ -5,8 +5,7 @@ This is my bot for CMU's [AI Poker Contest](https://cmudsc.com/pokerai-2026/). I
 > [!NOTE]  
 > **LLM Usage**: I worked heavily with [Claude Code](https://code.claude.com/docs/en/overview) while building this. 
 
-> [!NOTE]  
-> **Submission**: I didn't have time to finish the training run. So what I actually submitted was a simple Bayesian heuristic bot [`submission/frank_exchange.py`](submission/frank_exchange.py), named after the VFP [_Frank Exchange of Views_](https://theculture.fandom.com/wiki/Frank_Exchange_of_Views). It keeps the Bayesian posterior logic, and instead of using Deep CFR it samples actions according to Thompson sampling with some manual heuristics for strategic depth. This simpler bot placed around 37th out of 110 or so.
+I didn't have time to finish the training run. So what I actually submitted was a simple Bayesian heuristic bot [`submission/frank_exchange.py`](submission/frank_exchange.py), named after the VFP [_Frank Exchange of Views_](https://theculture.fandom.com/wiki/Frank_Exchange_of_Views). It keeps the Bayesian posterior logic, and instead of using Deep CFR it samples actions according to Thompson sampling with some manual heuristics for strategic depth. This simpler bot was 2nd at one point, but then the Deep RL people caught up; it ultimately placed around 37th out of 110 or so.
 
 ## The Game 
 
