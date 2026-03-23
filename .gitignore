@@ -169,5 +169,3 @@ cython_debug/
 # Poker engine logs
 logs/
 agent_logs/
-submissions/checkpoints
-submission/checkpoints

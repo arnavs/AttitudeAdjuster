@@ -5,7 +5,9 @@ This is my bot for CMU's [AI Poker Contest](https://cmudsc.com/pokerai-2026/). I
 > [!NOTE]  
 > **LLM Usage**: I worked heavily with [Claude Code](https://code.claude.com/docs/en/overview) while building this. 
 
-I didn't have time to finish the training run. So what I actually submitted was a simple Bayesian heuristic bot [`submission/frank_exchange.py`](submission/frank_exchange.py), named after the VFP [_Frank Exchange of Views_](https://theculture.fandom.com/wiki/Frank_Exchange_of_Views). It keeps the Bayesian posterior logic, and instead of using Deep CFR it samples actions according to Thompson sampling with some manual heuristics for strategic depth. This simpler bot family was doing quite well for a while (attaining a max rank of 2), but as compute budget scaled and people deployed more sophisticated approaches it fell. It ultimately placed around 37th out of 110 or so.
+I didn't have time to finish the training run. So what I actually submitted was a simple Bayesian heuristic bot [`submission/frank_exchange.py`](submission/frank_exchange.py), named after the VFP [_Frank Exchange of Views_](https://theculture.fandom.com/wiki/Frank_Exchange_of_Views). It keeps the Bayesian posterior logic, and instead of using Deep CFR it samples actions according to Thompson sampling with some manual heuristics for strategic depth.
+
+This simpler bot family was doing quite well for a while (attaining a max rank of 2), but as compute budget scaled and people deployed more (and more sophisticated) approaches it fell. It ultimately placed around 37th out of 110 or so.
 
 ## The Game 
 
@@ -62,7 +64,8 @@ All new code lives in `submission/`.
    2. The traverser is in [`submision/traversal.py`](submission/traversal.py). 
    3. The player agent is in [`submission/player.py`](submission/player.py). 
    4. The training loop is in [`submission/train.py`](submission/train.py). 
-   4. The observation encoder is in [`submission/encoder.py`](submission/encoder.py). 
+   5. The observation encoder is in [`submission/encoder.py`](submission/encoder.py). 
+   6. Checkpoints from a longer run (on a 12-core M2 Max) are in [`submission/checkpoints`](submission/checkpoints).
 
 ## How to Train the Bot
 
